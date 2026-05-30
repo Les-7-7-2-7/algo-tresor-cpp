@@ -3,28 +3,43 @@
 #include <algorithm>
 
 void OneLookaheadStrategy::preprocess(Game& game) {
-	// Pré-réserver la mémoire du pool en fonction du nombre total d'objets
-	candidatesPool.reserve(game.getAvailableItemsRaw().size());
+	candidatesPool.reserve(game.getItemIds().size());
 }
 
-const Item* OneLookaheadStrategy::bestOppPick(const std::vector<Item>& availableItems,
-	const std::vector<bool>& isAvailable,
-	int oppRemS, int oppRemW, int excludedId) const noexcept {
-	const Item* best = nullptr;
-	double maxDensity = -1.0;
+[[gnu::always_inline]] inline double OneLookaheadStrategy::evaluateDensity(int cost, int size, int weight, int remS, int remW) const noexcept {
+	double result = 0.0;
+	if (remS > 0 && remW > 0) {
+		result = static_cast<double>(cost) /
+			((static_cast<double>(size) / remS) + (static_cast<double>(weight) / remW));
+	}
+	return result;
+}
 
-	const size_t numItems = availableItems.size();
+[[gnu::always_inline]] inline int OneLookaheadStrategy::bestOpponentIndex(
+	const std::vector<int>& itemIds, const int* sizes, const int* weights, const int* costs,
+	const std::vector<uint64_t>& bitset, const std::vector<int>& idToIdx,
+	int oppRemS, int oppRemW, int excludedId) const noexcept {
+
+	int bestIndex = -1;
+	double maxDensity = -1.0;
+	const size_t numItems = itemIds.size();
+
+	[[gnu::unroll(4)]]
 	for (size_t i = 0; i < numItems; ++i) {
-		const auto& item = availableItems[i];
-		if (isAvailable[item.id] && item.id != excludedId && item.size <= oppRemS && item.weight <= oppRemW) {
-			double density = adaptiveDensity(item, oppRemS, oppRemW);
+		int id = itemIds[i];
+		size_t chunk = static_cast<size_t>(id) >> 6;
+		size_t bit = static_cast<size_t>(id) & 63;
+		bool isAvailable = (bitset[chunk] & (1ULL << bit)) != 0;
+
+		if (isAvailable && id != excludedId && sizes[i] <= oppRemS && weights[i] <= oppRemW) {
+			double density = evaluateDensity(costs[i], sizes[i], weights[i], oppRemS, oppRemW);
 			if (density > maxDensity) {
 				maxDensity = density;
-				best = &item;
+				bestIndex = static_cast<int>(i);
 			}
 		}
 	}
-	return best;
+	return bestIndex;
 }
 
 int OneLookaheadStrategy::pickItem(Game& game) {
@@ -35,27 +50,37 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 
 	int oppUsedS = 0;
 	int oppUsedW = 0;
-	const auto& oppItems = game.getOpponentItems();
-	const size_t numOppItems = oppItems.size();
+	const auto& oppItemIds = game.getOpponentItemIds();
+	const auto& idToIdx = game.getIdToIndexMap();
+	const int* sizes = game.getSizesPtr();
+	const int* weights = game.getWeightsPtr();
+	const int* costs = game.getCostsPtr();
+	const auto& itemIds = game.getItemIds();
+	const auto& bitset = game.getBitset();
+
+	const size_t numOppItems = oppItemIds.size();
+	[[gnu::unroll(4)]]
 	for (size_t i = 0; i < numOppItems; ++i) {
-		oppUsedS += oppItems[i].size;
-		oppUsedW += oppItems[i].weight;
+		int idx = idToIdx[oppItemIds[i]];
+		oppUsedS += sizes[idx];
+		oppUsedW += weights[idx];
 	}
 
 	const int oppRemS = game.getSizeCapacity() - oppUsedS;
 	const int oppRemW = game.getWeightCapacity() - oppUsedW;
 
-	const auto& availableItems = game.getAvailableItemsRaw();
-	const auto& isAvailable = game.getAvailableMask();
-
-	// Réutilisation du pool de mémoire globale (Évite l'allocation système sur le tas)
 	candidatesPool.clear();
+	const size_t numTotalItems = itemIds.size();
 
-	const size_t numTotalItems = availableItems.size();
+	[[gnu::unroll(4)]]
 	for (size_t i = 0; i < numTotalItems; ++i) {
-		const auto& item = availableItems[i];
-		if (isAvailable[item.id] && item.size <= remS && item.weight <= remW) {
-			candidatesPool.push_back({ &item, adaptiveDensity(item, remS, remW) });
+		int id = itemIds[i];
+		size_t chunk = static_cast<size_t>(id) >> 6;
+		size_t bit = static_cast<size_t>(id) & 63;
+		bool isAvailable = (bitset[chunk] & (1ULL << bit)) != 0;
+
+		if (isAvailable && sizes[i] <= remS && weights[i] <= remW) {
+			candidatesPool.push_back({ id, static_cast<int>(i), evaluateDensity(costs[i], sizes[i], weights[i], remS, remW) });
 		}
 	}
 
@@ -63,26 +88,63 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 		const int totalCandidates = static_cast<int>(candidatesPool.size());
 		const int limit = std::min(candidateLimit, totalCandidates);
 
-		// OPTIMISATION CRITIQUE : partial_sort au lieu de sort complet (Complexité réduite)
 		std::partial_sort(candidatesPool.begin(), candidatesPool.begin() + limit, candidatesPool.end(),
 			[](const Candidate& a, const Candidate& b) noexcept {
 				return a.density > b.density;
 			}
 		);
 
-		const Item* oppBaseline = bestOppPick(availableItems, isAvailable, oppRemS, oppRemW);
-		const double oppBaselineGain = (oppBaseline != nullptr) ? oppBaseline->cost : 0.0;
+		// Algorithmic optimization: find top 1 and top 2 opponent choices beforehand
+		int oppBestIdx1 = -1;
+		int oppBestIdx2 = -1;
+		double maxDensity1 = -1.0;
+		double maxDensity2 = -1.0;
 
+		[[gnu::unroll(4)]]
+		for (size_t i = 0; i < numTotalItems; ++i) {
+			int id = itemIds[i];
+			size_t chunk = static_cast<size_t>(id) >> 6;
+			size_t bit = static_cast<size_t>(id) & 63;
+			bool isAvailable = (bitset[chunk] & (1ULL << bit)) != 0;
+
+			if (isAvailable && sizes[i] <= oppRemS && weights[i] <= oppRemW) {
+				double density = evaluateDensity(costs[i], sizes[i], weights[i], oppRemS, oppRemW);
+				if (density > maxDensity1) {
+					maxDensity2 = maxDensity1;
+					oppBestIdx2 = oppBestIdx1;
+					maxDensity1 = density;
+					oppBestIdx1 = static_cast<int>(i);
+				}
+				else if (density > maxDensity2) {
+					maxDensity2 = density;
+					oppBestIdx2 = static_cast<int>(i);
+				}
+			}
+		}
+
+		const double oppBaselineGain = (oppBestIdx1 != -1) ? costs[oppBestIdx1] : 0.0;
 		double bestScore = -std::numeric_limits<double>::infinity();
-		const Item* bestItem = candidatesPool[0].item;
+		int bestItemId = candidatesPool[0].id;
 
+		// Core calculation loop: fully BRANCHLESS branch profiling mapping
+		[[gnu::unroll(4)]]
 		for (int i = 0; i < limit; ++i) {
 			const auto& cand = candidatesPool[i];
 			double oppGainAfter = 0.0;
 
 			if (oppRemS > 0 && oppRemW > 0) {
-				const Item* oppAfter = bestOppPick(availableItems, isAvailable, oppRemS, oppRemW, cand.item->id);
-				oppGainAfter = (oppAfter != nullptr) ? oppAfter->cost : 0.0;
+				// Branchless fallback mapping to trigger CMOV instruction generation
+				const bool isStealingBest1 = (oppBestIdx1 != -1 && cand.id == itemIds[oppBestIdx1]);
+
+				oppGainAfter = isStealingBest1
+					? ((oppBestIdx2 != -1) ? costs[oppBestIdx2] : 0.0)
+					: ((oppBestIdx1 != -1) ? costs[oppBestIdx1] : 0.0);
+
+				// Absolute fallback if matching exceptional constraints
+				if (__builtin_expect((oppBestIdx1 != -1 && cand.id == itemIds[oppBestIdx1] && oppBestIdx2 == -1), false)) {
+					int fallbackIdx = bestOpponentIndex(itemIds, sizes, weights, costs, bitset, idToIdx, oppRemS, oppRemW, cand.id);
+					oppGainAfter = (fallbackIdx != -1) ? costs[fallbackIdx] : 0.0;
+				}
 			}
 
 			const double denial = oppBaselineGain - oppGainAfter;
@@ -90,11 +152,11 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 
 			if (score > bestScore) {
 				bestScore = score;
-				bestItem = cand.item;
+				bestItemId = cand.id;
 			}
 		}
 
-		finalChoice = bestItem->id;
+		finalChoice = bestItemId;
 	}
 
 	return finalChoice;

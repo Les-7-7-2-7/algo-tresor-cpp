@@ -4,32 +4,39 @@
 
 Game::Game(int numberItems, int sCapacity, int wCapacity, std::unique_ptr<Strategy> strat)
 	: sizeCapacity(sCapacity), weightCapacity(wCapacity), strategy(std::move(strat)) {
-	rawItems.reserve(numberItems);
+	itemIds.reserve(numberItems);
+	itemSizes.reserve(numberItems);
+	itemWeights.reserve(numberItems);
+	itemCosts.reserve(numberItems);
 
-	// On initialise avec une taille de base, mais addItem s'adaptera dynamiquement si besoin
-	int initialSize = numberItems * 2 + 1;
-	isAvailable.resize(initialSize, false);
-	idToRawIndex.resize(initialSize, -1);
+	int initialIdCapacity = numberItems * 2 + 1;
+	idToIndex.resize(initialIdCapacity, -1);
+	availabilityBitset.resize((initialIdCapacity >> 6) + 1, 0ULL);
 }
 
-// Requis dans le .cpp pour que std::unique_ptr puisse voir la définition complète de Strategy au moment de sa destruction
 Game::~Game() = default;
 
 void Game::addItem(const Item& item) {
-	// Sécurité absolue & performance : Redimensionnement à la volée si l'ID dépasse les prévisions
-	if (item.id >= static_cast<int>(isAvailable.size())) {
-		int newSize = item.id + 100; // Marge pour éviter les réallocations successives
-		isAvailable.resize(newSize, false);
-		idToRawIndex.resize(newSize, -1);
+	if (item.id >= static_cast<int>(idToIndex.size())) {
+		int newSize = item.id + 128;
+		idToIndex.resize(newSize, -1);
+		availabilityBitset.resize((newSize >> 6) + 1, 0ULL);
 	}
 
-	rawItems.push_back(item);
-	isAvailable[item.id] = true;
-	idToRawIndex[item.id] = static_cast<int>(rawItems.size()) - 1;
+	itemIds.push_back(item.id);
+	itemSizes.push_back(item.size);
+	itemWeights.push_back(item.weight);
+	itemCosts.push_back(item.cost);
+
+	idToIndex[item.id] = static_cast<int>(itemIds.size()) - 1;
+
+	size_t chunk = static_cast<size_t>(item.id) >> 6;
+	size_t bit = static_cast<size_t>(item.id) & 63;
+	availabilityBitset[chunk] |= (1ULL << bit);
 }
 
 void Game::preprocess() {
-	std::cerr << CYAN << "[preprocess] " << rawItems.size() << " items, sizeCapacity=" << sizeCapacity
+	std::cerr << CYAN << "[preprocess] " << itemIds.size() << " items, sizeCapacity=" << sizeCapacity
 		<< ", weightCapacity=" << weightCapacity << RESET << "\n";
 
 	auto start = std::chrono::high_resolution_clock::now();
@@ -43,18 +50,20 @@ void Game::preprocess() {
 
 void Game::opponentTook(int id) {
 	turnNumber++;
-	if (id == -1) {
-		std::cerr << YELLOW << "[opponent] passed" << RESET << "\n";
+	if (id != -1 && id < static_cast<int>(idToIndex.size()) && isItemAvailable(id)) {
+		size_t chunk = static_cast<size_t>(id) >> 6;
+		size_t bit = static_cast<size_t>(id) & 63;
+		availabilityBitset[chunk] &= ~(1ULL << bit);
+
+		int index = idToIndex[id];
+		opponentItemIds.push_back(id);
+		opponentScore += itemCosts[index];
+
+		std::cerr << RED << "[opponent] took item " << id << " (size=" << itemSizes[index]
+			<< ", weight=" << itemWeights[index] << ", value=" << itemCosts[index] << ")" << RESET << "\n";
 	}
-	else {
-		if (id < static_cast<int>(isAvailable.size()) && isAvailable[id]) {
-			isAvailable[id] = false;
-			const Item& item = rawItems[idToRawIndex[id]];
-			opponentItems.push_back(item);
-			opponentScore += item.cost;
-			std::cerr << RED << "[opponent] took item " << id << " (size=" << item.size
-				<< ", weight=" << item.weight << ", value=" << item.cost << ")" << RESET << "\n";
-		}
+	else if (id == -1) {
+		std::cerr << YELLOW << "[opponent] passed" << RESET << "\n";
 	}
 }
 
@@ -65,22 +74,23 @@ int Game::pickItem() {
 	auto end = std::chrono::high_resolution_clock::now();
 	[[maybe_unused]] auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
-	if (proposedId != -1) {
-		if (proposedId < static_cast<int>(isAvailable.size()) && isAvailable[proposedId]) {
-			const Item& item = rawItems[idToRawIndex[proposedId]];
-			if ((currentWeight + item.weight) <= weightCapacity && (currentSize + item.size) <= sizeCapacity) {
-				chosenId = proposedId;
-				isAvailable[chosenId] = false;
-				myItems.push_back(item);
-				currentSize += item.size;
-				currentWeight += item.weight;
-				currentScore += item.cost;
+	if (proposedId != -1 && proposedId < static_cast<int>(idToIndex.size()) && isItemAvailable(proposedId)) {
+		int index = idToIndex[proposedId];
+		if ((currentWeight + itemWeights[index]) <= weightCapacity && (currentSize + itemSizes[index]) <= sizeCapacity) {
+			chosenId = proposedId;
+			size_t chunk = static_cast<size_t>(chosenId) >> 6;
+			size_t bit = static_cast<size_t>(chosenId) & 63;
+			availabilityBitset[chunk] &= ~(1ULL << bit);
 
-				std::cerr << GREEN << "[pick] took item " << proposedId << " (size=" << item.size
-					<< ", weight=" << item.weight << ", value=" << item.cost << ") | bag: size="
-					<< currentSize << "/" << sizeCapacity << ", weight=" << currentWeight
-					<< "/" << weightCapacity << RESET << "\n";
-			}
+			myItemIds.push_back(chosenId);
+			currentSize += itemSizes[index];
+			currentWeight += itemWeights[index];
+			currentScore += itemCosts[index];
+
+			std::cerr << GREEN << "[pick] took item " << proposedId << " (size=" << itemSizes[index]
+				<< ", weight=" << itemWeights[index] << ", value=" << itemCosts[index] << ") | bag: size="
+				<< currentSize << "/" << sizeCapacity << ", weight=" << currentWeight
+				<< "/" << weightCapacity << RESET << "\n";
 		}
 	}
 

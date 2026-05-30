@@ -2,34 +2,28 @@
 #define ONE_LOOKAHEAD_STRATEGY_HPP
 
 #include "Strategy.hpp"
-#include "Item.hpp"
 #include <limits>
 #include <vector>
+#include <cstdint>
 
 class OneLookaheadStrategy final : public Strategy {
 private:
 	struct Candidate {
-		const Item* item;
+		int id;
+		int index;
 		double density;
 	};
 
 	double gamma;
 	int candidateLimit;
 
-	// Pool de mémoire réutilisable d'un tour à l'autre (Zéro allocation dynamique en boucle)
 	std::vector<Candidate> candidatesPool;
 
-	[[nodiscard]] static constexpr double adaptiveDensity(const Item& i, int remS, int remW) noexcept {
-		double result = 0.0;
-		if (remS > 0 && remW > 0) {
-			result = static_cast<double>(i.cost) /
-				((static_cast<double>(i.size) / remS) + (static_cast<double>(i.weight) / remW));
-		}
-		return result;
-	}
+	[[nodiscard]] [[gnu::always_inline]] inline double evaluateDensity(int cost, int size, int weight, int remS, int remW) const noexcept;
 
-	[[nodiscard]] const Item* bestOppPick(const std::vector<Item>& availableItems,
-		const std::vector<bool>& isAvailable,
+	[[nodiscard]] [[gnu::always_inline]] inline int bestOpponentIndex(
+		const std::vector<int>& itemIds, const int* sizes, const int* weights, const int* costs,
+		const std::vector<uint64_t>& bitset, const std::vector<int>& idToIdx,
 		int oppRemS, int oppRemW, int excludedId = -1) const noexcept;
 
 public:

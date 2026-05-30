@@ -4,11 +4,9 @@
 #include <iostream>
 
 int main() {
-	// Optimisation maximale du flux d'E/S standard Linux
 	std::ios_base::sync_with_stdio(false);
 	std::cin.tie(nullptr);
 
-	// Tampon de lecture statique réutilisable à plat (zéro allocation)
 	char labelBuffer[128];
 
 	std::cin >> labelBuffer; // "n_items"
@@ -36,17 +34,15 @@ int main() {
 	std::cin >> labelBuffer; // "5000"
 	game.preprocess();
 
-	// Boucle d'événements SESE pure
 	bool running = (std::cin >> labelBuffer) ? true : false;
 	while (running) {
-		// Évite les instantiations/recherches lourdes de chaînes dynamiques
-		if (labelBuffer[0] == 't') { // "taken"
+		if (labelBuffer[0] == 't') {
 			int takenId = 0;
 			std::cin >> takenId;
 			game.opponentTook(takenId);
 		}
-		else if (labelBuffer[0] == 'n') { // "next_item"
-			std::cin >> labelBuffer; // Consomme la contrainte de temps (ex: "500")
+		else if (labelBuffer[0] == 'n') {
+			std::cin >> labelBuffer;
 
 			int choice = game.pickItem();
 			std::cout << choice << "\n";
