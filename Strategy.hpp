@@ -1,16 +1,11 @@
 #ifndef STRATEGY_HPP
 #define STRATEGY_HPP
 
-#include <vector>
+class Game; // Forward declaration pure, aucun include ici.
 
-// Forward declaration pour briser la dépendance cyclique
-class Game;
-
-// Utilisation d'une classe de base abstraite pure minimale pour le contrat, 
-// mais nous l'utiliserons de manière optimisée sans pointeurs nus.
 class Strategy {
 public:
-	virtual ~Strategy() default;
+	virtual ~Strategy() {};
 	virtual void preprocess(Game& game) = 0;
 	virtual int pickItem(Game& game) = 0;
 };

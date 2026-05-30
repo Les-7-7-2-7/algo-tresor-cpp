@@ -5,7 +5,7 @@
 #include "Strategy.hpp"
 #include <vector>
 #include <memory>
-#include <iostream>
+#include <string_view>
 
 class Game {
 private:
@@ -16,8 +16,8 @@ private:
 	static constexpr std::string_view YELLOW = "\033[33m";
 
 	std::vector<Item> rawItems;
-	std::vector<bool> isAvailable; // Remplace le HashMap avec recherche O(1) sans allocation
-	std::vector<int> idToRawIndex;  // Table de correspondance ID -> Index dans rawItems
+	std::vector<bool> isAvailable;
+	std::vector<int> idToRawIndex;
 
 	int sizeCapacity;
 	int weightCapacity;
@@ -33,20 +33,16 @@ private:
 	int turnNumber{ 0 };
 
 public:
-	Game(int numberItems, int sCapacity, int wCapacity, std::unique_ptr<Strategy> strat)
-		: sizeCapacity(sCapacity), weightCapacity(wCapacity), strategy(std::move(strat)) {
-		rawItems.reserve(numberItems);
-		// Supposons une borne raisonnable sur la valeur maximale de l'ID pour le masque d'indexation direct
-		isAvailable.resize(numberItems * 2 + 1, false);
-		idToRawIndex.resize(numberItems * 2 + 1, -1);
-	}
+	// Le constructeur est uniquement déclaré ici pour éviter d'instancier 
+	// std::unique_ptr avec un type incomplet lors des inclusions.
+	Game(int numberItems, int sCapacity, int wCapacity, std::unique_ptr<Strategy> strat);
+	~Game(); // Destructeur explicite obligatoire pour std::unique_ptr avec forward declarations
 
 	void addItem(const Item& item);
 	void preprocess();
 	void opponentTook(int id);
 	int pickItem();
 
-	// Getters
 	[[nodiscard]] int getRemainingWeight() const noexcept { return weightCapacity - currentWeight; }
 	[[nodiscard]] int getRemainingSize() const noexcept { return sizeCapacity - currentSize; }
 	[[nodiscard]] int getSizeCapacity() const noexcept { return sizeCapacity; }

@@ -1,11 +1,28 @@
 #include "Game.hpp"
 #include <chrono>
+#include <iostream>
+
+Game::Game(int numberItems, int sCapacity, int wCapacity, std::unique_ptr<Strategy> strat)
+	: sizeCapacity(sCapacity), weightCapacity(wCapacity), strategy(std::move(strat)) {
+	rawItems.reserve(numberItems);
+
+	// On initialise avec une taille de base, mais addItem s'adaptera dynamiquement si besoin
+	int initialSize = numberItems * 2 + 1;
+	isAvailable.resize(initialSize, false);
+	idToRawIndex.resize(initialSize, -1);
+}
+
+// Requis dans le .cpp pour que std::unique_ptr puisse voir la définition complète de Strategy au moment de sa destruction
+Game::~Game() = default;
 
 void Game::addItem(const Item& item) {
+	// Sécurité absolue & performance : Redimensionnement à la volée si l'ID dépasse les prévisions
 	if (item.id >= static_cast<int>(isAvailable.size())) {
-		isAvailable.resize(item.id + 1, false);
-		idToRawIndex.resize(item.id + 1, -1);
+		int newSize = item.id + 100; // Marge pour éviter les réallocations successives
+		isAvailable.resize(newSize, false);
+		idToRawIndex.resize(newSize, -1);
 	}
+
 	rawItems.push_back(item);
 	isAvailable[item.id] = true;
 	idToRawIndex[item.id] = static_cast<int>(rawItems.size()) - 1;
