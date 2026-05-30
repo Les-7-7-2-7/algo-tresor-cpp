@@ -17,15 +17,15 @@ void OneLookaheadStrategy::preprocess(Game& game) {
 
 [[gnu::always_inline]] inline int OneLookaheadStrategy::bestOpponentIndex(
 	const std::vector<int>& itemIds, const int* sizes, const int* weights, const int* costs,
-	const std::vector<uint64_t>& bitset, const std::vector<int>& idToIdx,
+	const std::vector<uint64_t>& bitset, [[maybe_unused]] const std::vector<int>& idToIdx,
 	int oppRemS, int oppRemW, int excludedId) const noexcept {
 
 	int bestIndex = -1;
 	double maxDensity = -1.0;
 	const size_t numItems = itemIds.size();
 
-	[[gnu::unroll(4)]]
-	for (size_t i = 0; i < numItems; ++i) {
+	// Attribut placé sur la même ligne que le for pour éviter d'être ignoré par g++
+	[[gnu::unroll(4)]] for (size_t i = 0; i < numItems; ++i) {
 		int id = itemIds[i];
 		size_t chunk = static_cast<size_t>(id) >> 6;
 		size_t bit = static_cast<size_t>(id) & 63;
@@ -59,8 +59,7 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 	const auto& bitset = game.getBitset();
 
 	const size_t numOppItems = oppItemIds.size();
-	[[gnu::unroll(4)]]
-	for (size_t i = 0; i < numOppItems; ++i) {
+	[[gnu::unroll(4)]] for (size_t i = 0; i < numOppItems; ++i) {
 		int idx = idToIdx[oppItemIds[i]];
 		oppUsedS += sizes[idx];
 		oppUsedW += weights[idx];
@@ -72,8 +71,7 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 	candidatesPool.clear();
 	const size_t numTotalItems = itemIds.size();
 
-	[[gnu::unroll(4)]]
-	for (size_t i = 0; i < numTotalItems; ++i) {
+	[[gnu::unroll(4)]] for (size_t i = 0; i < numTotalItems; ++i) {
 		int id = itemIds[i];
 		size_t chunk = static_cast<size_t>(id) >> 6;
 		size_t bit = static_cast<size_t>(id) & 63;
@@ -94,14 +92,12 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 			}
 		);
 
-		// Algorithmic optimization: find top 1 and top 2 opponent choices beforehand
 		int oppBestIdx1 = -1;
 		int oppBestIdx2 = -1;
 		double maxDensity1 = -1.0;
 		double maxDensity2 = -1.0;
 
-		[[gnu::unroll(4)]]
-		for (size_t i = 0; i < numTotalItems; ++i) {
+		[[gnu::unroll(4)]] for (size_t i = 0; i < numTotalItems; ++i) {
 			int id = itemIds[i];
 			size_t chunk = static_cast<size_t>(id) >> 6;
 			size_t bit = static_cast<size_t>(id) & 63;
@@ -126,21 +122,17 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 		double bestScore = -std::numeric_limits<double>::infinity();
 		int bestItemId = candidatesPool[0].id;
 
-		// Core calculation loop: fully BRANCHLESS branch profiling mapping
-		[[gnu::unroll(4)]]
-		for (int i = 0; i < limit; ++i) {
+		[[gnu::unroll(4)]] for (int i = 0; i < limit; ++i) {
 			const auto& cand = candidatesPool[i];
 			double oppGainAfter = 0.0;
 
 			if (oppRemS > 0 && oppRemW > 0) {
-				// Branchless fallback mapping to trigger CMOV instruction generation
 				const bool isStealingBest1 = (oppBestIdx1 != -1 && cand.id == itemIds[oppBestIdx1]);
 
 				oppGainAfter = isStealingBest1
 					? ((oppBestIdx2 != -1) ? costs[oppBestIdx2] : 0.0)
 					: ((oppBestIdx1 != -1) ? costs[oppBestIdx1] : 0.0);
 
-				// Absolute fallback if matching exceptional constraints
 				if (__builtin_expect((oppBestIdx1 != -1 && cand.id == itemIds[oppBestIdx1] && oppBestIdx2 == -1), false)) {
 					int fallbackIdx = bestOpponentIndex(itemIds, sizes, weights, costs, bitset, idToIdx, oppRemS, oppRemW, cand.id);
 					oppGainAfter = (fallbackIdx != -1) ? costs[fallbackIdx] : 0.0;
