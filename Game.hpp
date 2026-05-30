@@ -13,7 +13,7 @@ private:
 	alignas(64) std::vector<int> itemSizes;
 	alignas(64) std::vector<int> itemWeights;
 	alignas(64) std::vector<int> itemCosts;
-	alignas(64) std::vector<double> itemOracleScores;
+	alignas(64) std::vector<double> itemUtilities;
 
 	std::vector<uint64_t> availabilityBitset;
 	std::vector<int> idToIndex;
@@ -51,13 +51,13 @@ public:
 	[[nodiscard]] const int* getSizesPtr() const noexcept { return itemSizes.data(); }
 	[[nodiscard]] const int* getWeightsPtr() const noexcept { return itemWeights.data(); }
 	[[nodiscard]] const int* getCostsPtr() const noexcept { return itemCosts.data(); }
-	[[nodiscard]] const double* getOracleScoresPtr() const noexcept { return itemOracleScores.data(); }
+	[[nodiscard]] const double* getUtilitiesPtr() const noexcept { return itemUtilities.data(); }
 
 	[[nodiscard]] const std::vector<uint64_t>& getBitset() const noexcept { return availabilityBitset; }
 	[[nodiscard]] const std::vector<int>& getIdToIndexMap() const noexcept { return idToIndex; }
 
-	void updateOracleScoreInSoA(int index, double score) noexcept {
-		itemOracleScores[static_cast<size_t>(index)] = score;
+	void updateUtilityInSoA(int index, double utility) noexcept {
+		itemUtilities[static_cast<size_t>(index)] = utility;
 	}
 
 	[[nodiscard]] [[gnu::always_inline]] inline bool isItemAvailable(int id) const noexcept {

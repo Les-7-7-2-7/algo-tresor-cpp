@@ -1,6 +1,6 @@
 #include "Item.hpp"
 #include "Game.hpp"
-#include "OneLookaheadStrategy.hpp"
+#include "LagrangianRegretStrategy.hpp"
 #include <iostream>
 
 int main() {
@@ -9,19 +9,19 @@ int main() {
 
 	char labelBuffer[128];
 
-	if (std::cin >> labelBuffer) { // "n_items"
+	if (std::cin >> labelBuffer) {
 		int n = 0;
 		std::cin >> n;
 
-		std::cin >> labelBuffer; // "size_capacity"
+		std::cin >> labelBuffer;
 		int sizeCapacity = 0;
 		std::cin >> sizeCapacity;
 
-		std::cin >> labelBuffer; // "weight_capacity"
+		std::cin >> labelBuffer;
 		int weightCapacity = 0;
 		std::cin >> weightCapacity;
 
-		auto strategy = std::make_unique<OneLookaheadStrategy>();
+		auto strategy = std::make_unique<LagrangianRegretStrategy>();
 		Game game(n, sizeCapacity, weightCapacity, std::move(strategy));
 
 		for (int i = 0; i < n; ++i) {
