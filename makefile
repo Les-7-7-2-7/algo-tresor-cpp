@@ -7,13 +7,13 @@ ASM_FLAGS := -std=c++23 -O3 -march=native -fno-plt \
              -funroll-loops -finline-functions \
              -Wall -Wextra -Wpedantic -Wshadow -Wconversion
 
-SRC_DIR := .
 OBJ_DIR := obj
 ASM_DIR := asm
 
-SRCS := $(wildcard $(SRC_DIR)/*.cpp)
-OBJS := $(SRCS:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
-ASMS := $(SRCS:$(SRC_DIR)/%.cpp=$(ASM_DIR)/%.s)
+# Explicit source list to prevent old files from being compiled
+SRCS := Game.cpp Main.cpp LagrangianRegretStrategy.cpp
+OBJS := $(SRCS:%.cpp=$(OBJ_DIR)/%.o)
+ASMS := $(SRCS:%.cpp=$(ASM_DIR)/%.s)
 
 TARGET := algo_tresor
 
@@ -23,11 +23,11 @@ $(TARGET): $(OBJS)
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $^ -o $@
 
-$(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
+$(OBJ_DIR)/%.o: %.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(ASM_DIR)/%.s: $(SRC_DIR)/%.cpp
+$(ASM_DIR)/%.s: %.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(ASM_FLAGS) -S -masm=intel -fverbose-asm $< -o $@
 

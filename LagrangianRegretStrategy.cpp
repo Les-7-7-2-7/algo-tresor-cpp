@@ -12,7 +12,6 @@ void LagrangianRegretStrategy::preprocess(Game& game) {
 
 	evaluationPool.reserve(numItems);
 
-	// 1. Calculate Lagrangian resource pressure vectors across the entire board
 	double totalAvailableSize = 0.0;
 	double totalAvailableWeight = 0.0;
 #pragma GCC unroll 4
@@ -21,18 +20,15 @@ void LagrangianRegretStrategy::preprocess(Game& game) {
 		totalAvailableWeight += weights[i];
 	}
 
-	// Shadow cost multipliers mirroring multi-dimensional structural scarcity
 	double lambdaSize = static_cast<double>(game.getSizeCapacity()) / (totalAvailableSize + 1.0);
 	double lambdaWeight = static_cast<double>(game.getWeightCapacity()) / (totalAvailableWeight + 1.0);
 
-	// Invert to compute the strict penalty of consumption
 	double muS = 1.0 / (lambdaSize + 1e-5);
 	double muW = 1.0 / (lambdaWeight + 1e-5);
 	double muTotal = muS + muW;
 	muS /= muTotal;
 	muW /= muTotal;
 
-	// 2. Map structural utility bounds onto the SoA structure
 #pragma GCC unroll 4
 	for (size_t i = 0; i < numItems; ++i) {
 		double displacementCost = (muS * sizes[i]) + (muW * weights[i]);
@@ -55,7 +51,6 @@ int LagrangianRegretStrategy::pickItem(Game& game) {
 	const auto& idToIdx = game.getIdToIndexMap();
 	const int* sizes = game.getSizesPtr();
 	const int* weights = game.getWeightsPtr();
-	const int* costs = game.getCostsPtr();
 	const double* utilities = game.getUtilitiesPtr();
 	const auto& itemIds = game.getItemIds();
 	const auto& bitset = game.getBitset();
@@ -71,11 +66,9 @@ int LagrangianRegretStrategy::pickItem(Game& game) {
 	const int oppRemS = totalS - oppUsedS;
 	const int oppRemW = totalW - oppUsedW;
 
-	// Dynamic scale tracking inventory emptiness ratios
 	double myFullness = 1.0 - (static_cast<double>(remS + remW) / static_cast<double>(totalS + totalW));
 	double currentAlpha = alpha;
 
-	// Endgame state mutation: drop defensive gameplay when space becomes extremely critical
 	if (myFullness > 0.80) {
 		currentAlpha = 0.0;
 	}
@@ -83,7 +76,6 @@ int LagrangianRegretStrategy::pickItem(Game& game) {
 	evaluationPool.clear();
 	const size_t numTotalItems = itemIds.size();
 
-	// 1. Single scan tracking the opponent's maximum structural utility targets
 	int oppTargetIdx = -1;
 	double maxOppUtility = -1.0;
 #pragma GCC unroll 4
@@ -101,7 +93,6 @@ int LagrangianRegretStrategy::pickItem(Game& game) {
 		}
 	}
 
-	// 2. Evaluate my structural assets while calculating the linear regret matrix values
 #pragma GCC unroll 4
 	for (size_t i = 0; i < numTotalItems; ++i) {
 		int id = itemIds[i];
@@ -111,11 +102,7 @@ int LagrangianRegretStrategy::pickItem(Game& game) {
 
 		if (isAvailable && sizes[i] <= remS && weights[i] <= remW) {
 			double myBaseScore = utilities[i];
-
-			// Regret mitigation factor: if I steal their favorite option, calculate the denial vector weight
 			double denialRegretValue = (static_cast<int>(i) == oppTargetIdx) ? maxOppUtility * currentAlpha : 0.0;
-
-			// Adaptive volume packing modifier (penalizes large objects if they consume too much of what remains)
 			double spacingPenalty = (static_cast<double>(sizes[i]) / remS) + (static_cast<double>(weights[i]) / remW);
 			double dynamicScore = myBaseScore + denialRegretValue - (myFullness * spacingPenalty * 0.1);
 
@@ -124,7 +111,6 @@ int LagrangianRegretStrategy::pickItem(Game& game) {
 	}
 
 	if (!evaluationPool.empty()) {
-		// High efficiency branchless O(N) max extraction loop replacing STL heap overhead
 		double maximalScore = -std::numeric_limits<double>::infinity();
 		int targetPoolIndex = 0;
 		size_t poolSize = evaluationPool.size();
