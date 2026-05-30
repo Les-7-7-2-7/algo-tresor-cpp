@@ -2,60 +2,58 @@
 #include "Game.hpp"
 #include "OneLookaheadStrategy.hpp"
 #include <iostream>
-#include <string>
 
 int main() {
-	// Optimisation extrême des Entrées/Sorties standards pour g++ sous Debian
+	// Optimisation maximale du flux d'E/S standard Linux
 	std::ios_base::sync_with_stdio(false);
 	std::cin.tie(nullptr);
 
-	std::string token;
+	// Tampon de lecture statique réutilisable à plat (zéro allocation)
+	char labelBuffer[128];
 
-	// Lecture des configurations initiales
-	std::cin >> token; // "n_items"
+	std::cin >> labelBuffer; // "n_items"
 	int n = 0;
 	std::cin >> n;
 
-	std::cin >> token; // "size_capacity"
+	std::cin >> labelBuffer; // "size_capacity"
 	int sizeCapacity = 0;
 	std::cin >> sizeCapacity;
 
-	std::cin >> token; // "weight_capacity"
+	std::cin >> labelBuffer; // "weight_capacity"
 	int weightCapacity = 0;
 	std::cin >> weightCapacity;
 
-	// Instanciation de la stratégie demandée
 	auto strategy = std::make_unique<OneLookaheadStrategy>();
 	Game game(n, sizeCapacity, weightCapacity, std::move(strategy));
 
-	// Remplissage sans allocation inutile
 	for (int i = 0; i < n; ++i) {
 		Item item;
 		std::cin >> item.id >> item.size >> item.weight >> item.cost;
 		game.addItem(item);
 	}
 
-	std::cin >> token; // "preprocessing"
-	std::cin >> token; // "5000"
+	std::cin >> labelBuffer; // "preprocessing"
+	std::cin >> labelBuffer; // "5000"
 	game.preprocess();
 
-	// Boucle principale globale (Respect strict SESE)
-	bool running = (std::cin >> token) ? true : false;
+	// Boucle d'événements SESE pure
+	bool running = (std::cin >> labelBuffer) ? true : false;
 	while (running) {
-		if (token == "taken") {
+		// Évite les instantiations/recherches lourdes de chaînes dynamiques
+		if (labelBuffer[0] == 't') { // "taken"
 			int takenId = 0;
 			std::cin >> takenId;
 			game.opponentTook(takenId);
 		}
-		else if (token == "next_item") {
-			std::cin >> token; // Consomme la contrainte de temps (ex: "500")
+		else if (labelBuffer[0] == 'n') { // "next_item"
+			std::cin >> labelBuffer; // Consomme la contrainte de temps (ex: "500")
 
 			int choice = game.pickItem();
 			std::cout << choice << "\n";
 			std::cout.flush();
 		}
 
-		running = (std::cin >> token) ? true : false;
+		running = (std::cin >> labelBuffer) ? true : false;
 	}
 
 	return 0;

@@ -2,9 +2,8 @@
 #define ITEM_HPP
 
 #include <string_view>
-#include <charconv>
 
-struct Item {
+struct alignas(16) Item {
 	int id{ 0 };
 	int size{ 0 };
 	int weight{ 0 };

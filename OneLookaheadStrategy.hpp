@@ -4,12 +4,20 @@
 #include "Strategy.hpp"
 #include "Item.hpp"
 #include <limits>
-#include <vector> // <--- L'OUBLI ÉTAIT ICI
+#include <vector>
 
 class OneLookaheadStrategy final : public Strategy {
 private:
+	struct Candidate {
+		const Item* item;
+		double density;
+	};
+
 	double gamma;
 	int candidateLimit;
+
+	// Pool de mémoire réutilisable d'un tour à l'autre (Zéro allocation dynamique en boucle)
+	std::vector<Candidate> candidatesPool;
 
 	[[nodiscard]] static constexpr double adaptiveDensity(const Item& i, int remS, int remW) noexcept {
 		double result = 0.0;

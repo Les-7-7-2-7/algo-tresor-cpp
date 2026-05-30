@@ -2,7 +2,10 @@
 #include "Game.hpp"
 #include <algorithm>
 
-void OneLookaheadStrategy::preprocess([[maybe_unused]] Game& game) {}
+void OneLookaheadStrategy::preprocess(Game& game) {
+	// Pré-réserver la mémoire du pool en fonction du nombre total d'objets
+	candidatesPool.reserve(game.getAvailableItemsRaw().size());
+}
 
 const Item* OneLookaheadStrategy::bestOppPick(const std::vector<Item>& availableItems,
 	const std::vector<bool>& isAvailable,
@@ -10,7 +13,9 @@ const Item* OneLookaheadStrategy::bestOppPick(const std::vector<Item>& available
 	const Item* best = nullptr;
 	double maxDensity = -1.0;
 
-	for (const auto& item : availableItems) {
+	const size_t numItems = availableItems.size();
+	for (size_t i = 0; i < numItems; ++i) {
+		const auto& item = availableItems[i];
 		if (isAvailable[item.id] && item.id != excludedId && item.size <= oppRemS && item.weight <= oppRemW) {
 			double density = adaptiveDensity(item, oppRemS, oppRemW);
 			if (density > maxDensity) {
@@ -30,9 +35,11 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 
 	int oppUsedS = 0;
 	int oppUsedW = 0;
-	for (const auto& item : game.getOpponentItems()) {
-		oppUsedS += item.size;
-		oppUsedW += item.weight;
+	const auto& oppItems = game.getOpponentItems();
+	const size_t numOppItems = oppItems.size();
+	for (size_t i = 0; i < numOppItems; ++i) {
+		oppUsedS += oppItems[i].size;
+		oppUsedW += oppItems[i].weight;
 	}
 
 	const int oppRemS = game.getSizeCapacity() - oppUsedS;
@@ -41,45 +48,45 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 	const auto& availableItems = game.getAvailableItemsRaw();
 	const auto& isAvailable = game.getAvailableMask();
 
-	// Collecte et tri des candidats
-	struct Candidate {
-		const Item* item;
-		double density;
-	};
+	// Réutilisation du pool de mémoire globale (Évite l'allocation système sur le tas)
+	candidatesPool.clear();
 
-	std::vector<Candidate> candidates;
-	candidates.reserve(availableItems.size());
-
-	for (const auto& item : availableItems) {
+	const size_t numTotalItems = availableItems.size();
+	for (size_t i = 0; i < numTotalItems; ++i) {
+		const auto& item = availableItems[i];
 		if (isAvailable[item.id] && item.size <= remS && item.weight <= remW) {
-			candidates.push_back({ &item, adaptiveDensity(item, remS, remW) });
+			candidatesPool.push_back({ &item, adaptiveDensity(item, remS, remW) });
 		}
 	}
 
-	if (!candidates.empty()) {
-		std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) noexcept {
-			return a.density > b.density;
-			});
+	if (!candidatesPool.empty()) {
+		const int totalCandidates = static_cast<int>(candidatesPool.size());
+		const int limit = std::min(candidateLimit, totalCandidates);
 
-		if (static_cast<int>(candidates.size()) > candidateLimit) {
-			candidates.resize(candidateLimit);
-		}
+		// OPTIMISATION CRITIQUE : partial_sort au lieu de sort complet (Complexité réduite)
+		std::partial_sort(candidatesPool.begin(), candidatesPool.begin() + limit, candidatesPool.end(),
+			[](const Candidate& a, const Candidate& b) noexcept {
+				return a.density > b.density;
+			}
+		);
 
 		const Item* oppBaseline = bestOppPick(availableItems, isAvailable, oppRemS, oppRemW);
 		const double oppBaselineGain = (oppBaseline != nullptr) ? oppBaseline->cost : 0.0;
 
 		double bestScore = -std::numeric_limits<double>::infinity();
-		const Item* bestItem = candidates[0].item;
+		const Item* bestItem = candidatesPool[0].item;
 
-		for (const auto& cand : candidates) {
+		for (int i = 0; i < limit; ++i) {
+			const auto& cand = candidatesPool[i];
 			double oppGainAfter = 0.0;
+
 			if (oppRemS > 0 && oppRemW > 0) {
 				const Item* oppAfter = bestOppPick(availableItems, isAvailable, oppRemS, oppRemW, cand.item->id);
 				oppGainAfter = (oppAfter != nullptr) ? oppAfter->cost : 0.0;
 			}
 
-			double denial = oppBaselineGain - oppGainAfter;
-			double score = cand.density + gamma * denial;
+			const double denial = oppBaselineGain - oppGainAfter;
+			const double score = cand.density + (gamma * denial);
 
 			if (score > bestScore) {
 				bestScore = score;
