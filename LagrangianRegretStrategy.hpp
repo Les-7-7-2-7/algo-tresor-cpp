@@ -3,22 +3,26 @@
 
 #include "Strategy.hpp"
 #include <vector>
+#include <random>
 
 class LagrangianRegretStrategy final : public Strategy {
 private:
-	struct ScoredItem {
-		int id;
-		int index;
-		double dynamicScore;
+	struct ThreadWorker {
+		std::mt19937 rng;
+		std::vector<int> localMarket;
 	};
 
-	double alpha; // Balanced defensive feedback parameter
-	std::vector<ScoredItem> evaluationPool;
+	int numCores;
+	std::vector<ThreadWorker> workers;
+
+	// Cleared signature tracking to strictly eradicate compile-time alerts
+	[[nodiscard]] double runRollout(
+		int remS, int remW, int oppRemS, int oppRemW, int startIdx,
+		const int* sizes, const int* weights, const int* costs,
+		std::vector<int>& localMarket, std::mt19937& rng) const noexcept;
 
 public:
-	explicit LagrangianRegretStrategy(double defensiveFactor = 0.6) noexcept
-		: alpha(defensiveFactor) {
-	}
+	explicit LagrangianRegretStrategy() noexcept;
 
 	void preprocess(Game& game) override;
 	int pickItem(Game& game) override;

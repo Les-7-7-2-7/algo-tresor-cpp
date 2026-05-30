@@ -2,39 +2,63 @@
 #include "Game.hpp"
 #include <algorithm>
 #include <limits>
+#include <thread>
+#include <future>
+
+LagrangianRegretStrategy::LagrangianRegretStrategy() noexcept : numCores(1) {
+	unsigned int cores = std::thread::hardware_concurrency();
+	if (cores > 0) {
+		numCores = static_cast<int>(cores);
+	}
+}
 
 void LagrangianRegretStrategy::preprocess(Game& game) {
-	const auto& itemIds = game.getItemIds();
-	const int* sizes = game.getSizesPtr();
-	const int* weights = game.getWeightsPtr();
-	const int* costs = game.getCostsPtr();
-	size_t numItems = itemIds.size();
+	size_t totalItems = game.getItemIds().size();
+	workers.resize(static_cast<size_t>(numCores));
 
-	evaluationPool.reserve(numItems);
+	std::random_device rd;
+	for (int i = 0; i < numCores; ++i) {
+		workers[static_cast<size_t>(i)].rng.seed(rd());
+		workers[static_cast<size_t>(i)].localMarket.reserve(totalItems);
+	}
+}
 
-	double totalAvailableSize = 0.0;
-	double totalAvailableWeight = 0.0;
-#pragma GCC unroll 4
-	for (size_t i = 0; i < numItems; ++i) {
-		totalAvailableSize += sizes[i];
-		totalAvailableWeight += weights[i];
+double LagrangianRegretStrategy::runRollout(
+	int remS, int remW, int oppRemS, int oppRemW, int startIdx,
+	const int* sizes, const int* weights, const int* costs,
+	std::vector<int>& localMarket, std::mt19937& rng) const noexcept {
+
+	int myS = remS - sizes[startIdx];
+	int myW = remW - weights[startIdx];
+	int oppS = oppRemS;
+	int oppW = oppRemW;
+
+	double myScore = costs[startIdx];
+	double oppScore = 0.0;
+
+	std::shuffle(localMarket.begin(), localMarket.end(), rng);
+	size_t marketSize = localMarket.size();
+
+	for (size_t i = 0; i < marketSize; ++i) {
+		int idx = localMarket[i];
+		if (idx != startIdx) {
+			bool processed = false;
+
+			if (sizes[idx] <= myS && weights[idx] <= myW) {
+				myS -= sizes[idx];
+				myW -= weights[idx];
+				myScore += costs[idx];
+				processed = true;
+			}
+			if (!processed && sizes[idx] <= oppS && weights[idx] <= oppW) {
+				oppS -= sizes[idx];
+				oppW -= weights[idx];
+				oppScore += costs[idx];
+			}
+		}
 	}
 
-	double lambdaSize = static_cast<double>(game.getSizeCapacity()) / (totalAvailableSize + 1.0);
-	double lambdaWeight = static_cast<double>(game.getWeightCapacity()) / (totalAvailableWeight + 1.0);
-
-	double muS = 1.0 / (lambdaSize + 1e-5);
-	double muW = 1.0 / (lambdaWeight + 1e-5);
-	double muTotal = muS + muW;
-	muS /= muTotal;
-	muW /= muTotal;
-
-#pragma GCC unroll 4
-	for (size_t i = 0; i < numItems; ++i) {
-		double displacementCost = (muS * sizes[i]) + (muW * weights[i]);
-		double utility = static_cast<double>(costs[i]) / (displacementCost + 1e-5);
-		game.updateUtilityInSoA(static_cast<int>(i), utility);
-	}
+	return myScore - (0.5 * oppScore);
 }
 
 int LagrangianRegretStrategy::pickItem(Game& game) {
@@ -51,7 +75,7 @@ int LagrangianRegretStrategy::pickItem(Game& game) {
 	const auto& idToIdx = game.getIdToIndexMap();
 	const int* sizes = game.getSizesPtr();
 	const int* weights = game.getWeightsPtr();
-	const double* utilities = game.getUtilitiesPtr();
+	const int* costs = game.getCostsPtr();
 	const auto& itemIds = game.getItemIds();
 	const auto& bitset = game.getBitset();
 
@@ -65,13 +89,13 @@ int LagrangianRegretStrategy::pickItem(Game& game) {
 
 	const int oppRemS = totalS - oppUsedS;
 	const int oppRemW = totalW - oppUsedW;
-
-	// Calculate real-time item pool depletion ratios
-	double remainingPoolSize = 0.0;
-	double remainingPoolWeight = 0.0;
 	const size_t numTotalItems = itemIds.size();
 
-#pragma GCC unroll 4
+	std::vector<int> globalAvailablePool;
+	globalAvailablePool.reserve(numTotalItems);
+	std::vector<int> validCandidatesIndices;
+	validCandidatesIndices.reserve(numTotalItems);
+
 	for (size_t i = 0; i < numTotalItems; ++i) {
 		int id = itemIds[i];
 		size_t chunk = static_cast<size_t>(id) >> 6;
@@ -79,85 +103,65 @@ int LagrangianRegretStrategy::pickItem(Game& game) {
 		bool isAvailable = (bitset[chunk] & (1ULL << bit)) != 0;
 
 		if (isAvailable) {
-			remainingPoolSize += sizes[i];
-			remainingPoolWeight += weights[i];
-		}
-	}
-
-	double currentScarcityS = static_cast<double>(remS + oppRemS) / (remainingPoolSize + 1.0);
-	double currentScarcityW = static_cast<double>(remW + oppRemW) / (remainingPoolWeight + 1.0);
-
-	double dynamicMuS = 1.0 / (currentScarcityS + 1e-5);
-	double dynamicMuW = 1.0 / (currentScarcityW + 1e-5);
-	double dynamicMuTotal = dynamicMuS + dynamicMuW;
-	dynamicMuS /= dynamicMuTotal;
-	dynamicMuW /= dynamicMuTotal;
-
-	double myFullness = 1.0 - (static_cast<double>(remS + remW) / static_cast<double>(totalS + totalW));
-	double currentAlpha = alpha;
-
-	if (myFullness > 0.82) {
-		currentAlpha = 0.0;
-	}
-
-	evaluationPool.clear();
-
-	// 1. Scan to find the opponent's absolute highest target based on integrated utility matrix
-	int oppTargetIdx = -1;
-	double maxOppValueScore = -1.0;
-#pragma GCC unroll 4
-	for (size_t i = 0; i < numTotalItems; ++i) {
-		int id = itemIds[i];
-		size_t chunk = static_cast<size_t>(id) >> 6;
-		size_t bit = static_cast<size_t>(id) & 63;
-		bool isAvailable = (bitset[chunk] & (1ULL << bit)) != 0;
-
-		if (isAvailable && sizes[i] <= oppRemS && weights[i] <= oppRemW) {
-			double oppOppCost = (dynamicMuS * sizes[i]) + (dynamicMuW * weights[i]);
-			// Multiplies the baseline structural utility by the instant market volatility multiplier
-			double oppScore = utilities[i] * (1.0 / (oppOppCost + 1e-5));
-			if (oppScore > maxOppValueScore) {
-				maxOppValueScore = oppScore;
-				oppTargetIdx = static_cast<int>(i);
+			globalAvailablePool.push_back(static_cast<int>(i));
+			if (sizes[i] <= remS && weights[i] <= remW) {
+				validCandidatesIndices.push_back(static_cast<int>(i));
 			}
 		}
 	}
 
-	// 2. Evaluate my choices combining precalculated utility, time tension, and dynamic regret bonus
-#pragma GCC unroll 4
-	for (size_t i = 0; i < numTotalItems; ++i) {
-		int id = itemIds[i];
-		size_t chunk = static_cast<size_t>(id) >> 6;
-		size_t bit = static_cast<size_t>(id) & 63;
-		bool isAvailable = (bitset[chunk] & (1ULL << bit)) != 0;
+	if (!validCandidatesIndices.empty()) {
+		size_t numCandidates = validCandidatesIndices.size();
+		std::vector<double> candidateScores(numCandidates, 0.0);
+		std::vector<std::future<void>> asyncFutures;
+		asyncFutures.reserve(static_cast<size_t>(numCores));
 
-		if (isAvailable && sizes[i] <= remS && weights[i] <= remW) {
-			double myOppCost = (dynamicMuS * sizes[i]) + (dynamicMuW * weights[i]);
-			// Integrated score: base lagrangian utility dynamically adjusted by the current turn friction
-			double myDynamicScore = utilities[i] * (1.0 / (myOppCost + 1e-5));
+		auto workerTask = [this, &validCandidatesIndices, &globalAvailablePool, &candidateScores,
+			sizes, weights, costs, remS, remW, oppRemS, oppRemW](int threadId) {
+			size_t tId = static_cast<size_t>(threadId);
+			auto& localBuffer = workers[tId].localMarket;
+			auto& localRng = workers[tId].rng;
 
-			double denialRegretValue = (static_cast<int>(i) == oppTargetIdx) ? maxOppValueScore * currentAlpha : 0.0;
-			double spacingPenalty = (static_cast<double>(sizes[i]) / remS) + (static_cast<double>(weights[i]) / remW);
+			size_t totalCand = validCandidatesIndices.size();
+			size_t chunkSize = (totalCand + static_cast<size_t>(numCores) - 1) / static_cast<size_t>(numCores);
+			size_t startCandIdx = tId * chunkSize;
+			size_t endCandIdx = std::min(startCandIdx + chunkSize, totalCand);
 
-			double dynamicFinalScore = myDynamicScore + denialRegretValue - (myFullness * spacingPenalty * 0.15);
+			const int iterationsPerCandidate = 250;
 
-			evaluationPool.push_back({ id, static_cast<int>(i), dynamicFinalScore });
+			for (size_t c = startCandIdx; c < endCandIdx; ++c) {
+				int candItemIdx = validCandidatesIndices[c];
+				double totalSimulatedScore = 0.0;
+
+				for (int sim = 0; sim < iterationsPerCandidate; ++sim) {
+					localBuffer = globalAvailablePool;
+					totalSimulatedScore += runRollout(
+						remS, remW, oppRemS, oppRemW, candItemIdx,
+						sizes, weights, costs, localBuffer, localRng
+					);
+				}
+				candidateScores[c] = totalSimulatedScore / iterationsPerCandidate;
+			}
+			};
+
+		for (int i = 0; i < numCores; ++i) {
+			asyncFutures.push_back(std::async(std::launch::async, workerTask, i));
 		}
-	}
 
-	if (!evaluationPool.empty()) {
-		double maximalScore = -std::numeric_limits<double>::infinity();
-		int targetPoolIndex = 0;
-		size_t poolSize = evaluationPool.size();
+		for (auto& fut : asyncFutures) {
+			fut.wait();
+		}
 
-#pragma GCC unroll 4
-		for (size_t i = 0; i < poolSize; ++i) {
-			if (evaluationPool[i].dynamicScore > maximalScore) {
-				maximalScore = evaluationPool[i].dynamicScore;
-				targetPoolIndex = static_cast<int>(i);
+		double highestScore = -std::numeric_limits<double>::infinity();
+		int bestItemIndexOnBoard = validCandidatesIndices[0];
+
+		for (size_t i = 0; i < numCandidates; ++i) {
+			if (candidateScores[i] > highestScore) {
+				highestScore = candidateScores[i];
+				bestItemIndexOnBoard = validCandidatesIndices[i];
 			}
 		}
-		finalChoice = evaluationPool[static_cast<size_t>(targetPoolIndex)].id;
+		finalChoice = itemIds[static_cast<size_t>(bestItemIndexOnBoard)];
 	}
 
 	return finalChoice;

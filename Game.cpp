@@ -7,7 +7,7 @@ Game::Game(int numberItems, int sCapacity, int wCapacity, std::unique_ptr<Strate
 	itemSizes.reserve(numberItems);
 	itemWeights.reserve(numberItems);
 	itemCosts.reserve(numberItems);
-	itemUtilities.resize(static_cast<size_t>(numberItems), 0.0);
+	itemIdealMask.resize(static_cast<size_t>(numberItems), false);
 
 	int initialIdCapacity = numberItems * 2 + 1;
 	idToIndex.resize(initialIdCapacity, -1);
@@ -25,8 +25,8 @@ void Game::addItem(const Item& item) {
 	itemSizes.push_back(item.size);
 	itemWeights.push_back(item.weight);
 	itemCosts.push_back(item.cost);
-	if (itemIds.size() > itemUtilities.size()) {
-		itemUtilities.push_back(0.0);
+	if (itemIds.size() > itemIdealMask.size()) {
+		itemIdealMask.push_back(false);
 	}
 
 	idToIndex[item.id] = static_cast<int>(itemIds.size()) - 1;

@@ -13,7 +13,7 @@ private:
 	alignas(64) std::vector<int> itemSizes;
 	alignas(64) std::vector<int> itemWeights;
 	alignas(64) std::vector<int> itemCosts;
-	alignas(64) std::vector<double> itemUtilities;
+	alignas(64) std::vector<bool> itemIdealMask; // Tracks items belonging to the precalculated ideal plan
 
 	std::vector<uint64_t> availabilityBitset;
 	std::vector<int> idToIndex;
@@ -51,13 +51,16 @@ public:
 	[[nodiscard]] const int* getSizesPtr() const noexcept { return itemSizes.data(); }
 	[[nodiscard]] const int* getWeightsPtr() const noexcept { return itemWeights.data(); }
 	[[nodiscard]] const int* getCostsPtr() const noexcept { return itemCosts.data(); }
-	[[nodiscard]] const double* getUtilitiesPtr() const noexcept { return itemUtilities.data(); }
 
 	[[nodiscard]] const std::vector<uint64_t>& getBitset() const noexcept { return availabilityBitset; }
 	[[nodiscard]] const std::vector<int>& getIdToIndexMap() const noexcept { return idToIndex; }
 
-	void updateUtilityInSoA(int index, double utility) noexcept {
-		itemUtilities[static_cast<size_t>(index)] = utility;
+	void markItemAsIdeal(int index, bool status) noexcept {
+		itemIdealMask[static_cast<size_t>(index)] = status;
+	}
+
+	[[nodiscard]] bool isItemIdeal(int index) const noexcept {
+		return itemIdealMask[static_cast<size_t>(index)];
 	}
 
 	[[nodiscard]] [[gnu::always_inline]] inline bool isItemAvailable(int id) const noexcept {
