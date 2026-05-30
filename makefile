@@ -10,7 +10,7 @@ ASM_FLAGS := -std=c++23 -O3 -march=native -fno-plt \
 OBJ_DIR := obj
 ASM_DIR := asm
 
-SRCS := Game.cpp Main.cpp LagrangianRegretStrategy.cpp
+SRCS := Game.cpp Main.cpp DMRStrategy.cpp
 OBJS := $(SRCS:%.cpp=$(OBJ_DIR)/%.o)
 ASMS := $(SRCS:%.cpp=$(ASM_DIR)/%.s)
 

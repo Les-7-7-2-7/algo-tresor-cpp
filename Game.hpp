@@ -13,7 +13,6 @@ private:
 	alignas(64) std::vector<int> itemSizes;
 	alignas(64) std::vector<int> itemWeights;
 	alignas(64) std::vector<int> itemCosts;
-	alignas(64) std::vector<bool> itemIdealMask; // Tracks items belonging to the precalculated ideal plan
 
 	std::vector<uint64_t> availabilityBitset;
 	std::vector<int> idToIndex;
@@ -22,13 +21,13 @@ private:
 	int weightCapacity;
 	std::unique_ptr<Strategy> strategy;
 
-	std::vector<int> myItemIds;
-	std::vector<int> opponentItemIds;
-
 	int currentSize{ 0 };
 	int currentWeight{ 0 };
-	int currentScore{ 0 };
-	int opponentScore{ 0 };
+	int opponentSize{ 0 };
+	int opponentWeight{ 0 };
+
+	int myScore{ 0 };
+	int oppScore{ 0 };
 	int turnNumber{ 0 };
 
 public:
@@ -37,16 +36,16 @@ public:
 
 	void addItem(const Item& item);
 	void preprocess();
-	void opponentTook(int id);
+	void opponentTook(int id) noexcept;
 	int pickItem();
 
 	[[nodiscard]] int getRemainingWeight() const noexcept { return weightCapacity - currentWeight; }
 	[[nodiscard]] int getRemainingSize() const noexcept { return sizeCapacity - currentSize; }
+	[[nodiscard]] int getOpponentRemainingWeight() const noexcept { return weightCapacity - opponentWeight; }
+	[[nodiscard]] int getOpponentRemainingSize() const noexcept { return sizeCapacity - opponentSize; }
 	[[nodiscard]] int getSizeCapacity() const noexcept { return sizeCapacity; }
 	[[nodiscard]] int getWeightCapacity() const noexcept { return weightCapacity; }
-	[[nodiscard]] int getTurnNumber() const noexcept { return turnNumber; }
 
-	[[nodiscard]] const std::vector<int>& getOpponentItemIds() const noexcept { return opponentItemIds; }
 	[[nodiscard]] const std::vector<int>& getItemIds() const noexcept { return itemIds; }
 	[[nodiscard]] const int* getSizesPtr() const noexcept { return itemSizes.data(); }
 	[[nodiscard]] const int* getWeightsPtr() const noexcept { return itemWeights.data(); }
@@ -55,18 +54,16 @@ public:
 	[[nodiscard]] const std::vector<uint64_t>& getBitset() const noexcept { return availabilityBitset; }
 	[[nodiscard]] const std::vector<int>& getIdToIndexMap() const noexcept { return idToIndex; }
 
-	void markItemAsIdeal(int index, bool status) noexcept {
-		itemIdealMask[static_cast<size_t>(index)] = status;
-	}
-
-	[[nodiscard]] bool isItemIdeal(int index) const noexcept {
-		return itemIdealMask[static_cast<size_t>(index)];
-	}
-
 	[[nodiscard]] [[gnu::always_inline]] inline bool isItemAvailable(int id) const noexcept {
-		size_t chunk = static_cast<size_t>(id) >> 6;
-		size_t bit = static_cast<size_t>(id) & 63;
-		return (chunk < availabilityBitset.size()) && ((availabilityBitset[chunk] & (1ULL << bit)) != 0);
+		bool available = false;
+		if (id >= 0 && id < static_cast<int>(idToIndex.size())) {
+			size_t chunk = static_cast<size_t>(id) >> 6;
+			size_t bit = static_cast<size_t>(id) & 63;
+			if (chunk < availabilityBitset.size()) {
+				available = ((availabilityBitset[chunk] & (1ULL << bit)) != 0);
+			}
+		}
+		return available;
 	}
 };
 

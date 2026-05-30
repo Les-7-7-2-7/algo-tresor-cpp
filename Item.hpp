@@ -6,10 +6,6 @@ struct alignas(16) Item {
 	int size{ 0 };
 	int weight{ 0 };
 	int cost{ 0 };
-
-	[[nodiscard]] constexpr bool operator==(const Item& other) const noexcept {
-		return id == other.id;
-	}
 };
 
 #endif // ITEM_HPP
