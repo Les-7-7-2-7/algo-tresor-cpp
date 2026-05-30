@@ -4,6 +4,7 @@
 #include "Strategy.hpp"
 #include "Item.hpp"
 #include <limits>
+#include <vector> // <--- L'OUBLI ÉTAIT ICI
 
 class OneLookaheadStrategy final : public Strategy {
 private:
