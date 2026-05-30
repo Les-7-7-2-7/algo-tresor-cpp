@@ -3,115 +3,22 @@
 #include <algorithm>
 
 void OneLookaheadStrategy::preprocess(Game& game) {
-	size_t totalItems = game.getItemIds().size();
-	candidatesPool.reserve(totalItems);
-	rolloutBitset.resize(game.getBitset().size(), 0ULL);
+	candidatesPool.reserve(game.getItemIds().size());
 }
 
-[[gnu::always_inline]] inline double OneLookaheadStrategy::evaluateDensity(int cost, int size, int weight, int remS, int remW) const noexcept {
-	double result = 0.0;
+[[gnu::always_inline]] inline double OneLookaheadStrategy::evaluateScore(
+	int cost, int size, int weight, int remS, int remW, double spaceUrgency) const noexcept {
+
+	double score = 0.0;
 	if (remS > 0 && remW > 0) {
-		result = static_cast<double>(cost) /
-			((static_cast<double>(size) / remS) + (static_cast<double>(weight) / remW));
+		// Space structural friction penalty fraction
+		double sizeCost = static_cast<double>(size) / remS;
+		double weightCost = static_cast<double>(weight) / remW;
+
+		// Combines items immediate cost value with a penalty for choking remaining space
+		score = static_cast<double>(cost) / (1.0 + spaceUrgency * (sizeCost + weightCost));
 	}
-	return result;
-}
-
-[[gnu::always_inline]] inline double OneLookaheadStrategy::calculateDynamicGamma(int totalItems, int currentTurn) const noexcept {
-	double progress = static_cast<double>(currentTurn) / static_cast<double>(std::max(1, totalItems));
-	double gamma = baseGamma;
-
-	if (progress < 0.15) {
-		gamma = baseGamma * 0.4; // Early game: Focus heavily on own inventory optimization
-	}
-	else if (progress > 0.80) {
-		gamma = 0.0;             // Endgame: Absolute greed, ignore opponent entirely
-	}
-	else {
-		gamma = baseGamma * 1.6; // Midgame: Maximum defensive denial interference
-	}
-	return gamma;
-}
-
-double OneLookaheadStrategy::computeDeterministicRollout(
-	double gamma, const std::vector<int>& itemIds, const int* sizes, const int* weights, const int* costs,
-	int initialMyRemS, int initialMyRemW, int initialOppRemS, int initialOppRemW,
-	double initialMyScore, double initialOppScore) noexcept {
-
-	int myRemS = initialMyRemS;
-	int myRemW = initialMyRemW;
-	int oppRemS = initialOppRemS;
-	int oppRemW = initialOppRemW;
-	double myScore = initialMyScore;
-	double oppScore = initialOppScore;
-
-	const size_t numTotalItems = itemIds.size();
-	bool gameStillActive = true;
-
-	// High speed flash rollout loop simulating endgame mechanics
-	while (gameStillActive) {
-		gameStillActive = false;
-
-		int bestMyIdx = -1;
-		double bestMyDensity = -1.0;
-		int bestOppIdx = -1;
-		double bestOppDensity = -1.0;
-
-		// Linear scan leveraging cached SoA layout pointers in CPU L1 cache
-#pragma GCC unroll 4
-		for (size_t i = 0; i < numTotalItems; ++i) {
-			int id = itemIds[i];
-			size_t chunk = static_cast<size_t>(id) >> 6;
-			size_t bit = static_cast<size_t>(id) & 63;
-			bool isAvailable = (rolloutBitset[chunk] & (1ULL << bit)) != 0;
-
-			if (isAvailable) {
-				// Evaluate best choice for me in this simulation state
-				if (sizes[i] <= myRemS && weights[i] <= myRemW) {
-					double d = evaluateDensity(costs[i], sizes[i], weights[i], myRemS, myRemW);
-					if (d > bestMyDensity) {
-						bestMyDensity = d;
-						bestMyIdx = static_cast<int>(i);
-					}
-				}
-				// Evaluate best choice for the opponent in this simulation state
-				if (sizes[i] <= oppRemS && weights[i] <= oppRemW) {
-					double d = evaluateDensity(costs[i], sizes[i], weights[i], oppRemS, oppRemW);
-					if (d > bestOppDensity) {
-						bestOppDensity = d;
-						bestOppIdx = static_cast<int>(i);
-					}
-				}
-			}
-		}
-
-		// Apply best greedy move for Me if available
-		if (bestMyIdx != -1) {
-			int id = itemIds[static_cast<size_t>(bestMyIdx)];
-			rolloutBitset[static_cast<size_t>(id) >> 6] &= ~(1ULL << (static_cast<size_t>(id) & 63));
-			myRemS -= sizes[bestMyIdx];
-			myRemW -= weights[bestMyIdx];
-			myScore += costs[bestMyIdx];
-			gameStillActive = true;
-		}
-
-		// Apply best greedy move for the Opponent if available
-		if (bestOppIdx != -1) {
-			int id = itemIds[static_cast<size_t>(bestOppIdx)];
-			// Verify item wasn't just taken by me in the same phase step
-			size_t chunk = static_cast<size_t>(id) >> 6;
-			size_t bit = static_cast<size_t>(id) & 63;
-			if ((rolloutBitset[chunk] & (1ULL << bit)) != 0) {
-				rolloutBitset[chunk] &= ~(1ULL << bit);
-				oppRemS -= sizes[bestOppIdx];
-				oppRemW -= weights[bestOppIdx];
-				oppScore += costs[bestOppIdx];
-				gameStillActive = true;
-			}
-		}
-	}
-
-	return myScore - (gamma * oppScore);
+	return score;
 }
 
 int OneLookaheadStrategy::pickItem(Game& game) {
@@ -119,6 +26,8 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 
 	const int remS = game.getRemainingSize();
 	const int remW = game.getRemainingWeight();
+	const int totalS = game.getSizeCapacity();
+	const int totalW = game.getWeightCapacity();
 
 	int oppUsedS = 0;
 	int oppUsedW = 0;
@@ -138,13 +47,19 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 		oppUsedW += weights[idx];
 	}
 
-	const int oppRemS = game.getSizeCapacity() - oppUsedS;
-	const int oppRemW = game.getWeightCapacity() - oppUsedW;
+	const int oppRemS = totalS - oppUsedS;
+	const int oppRemW = totalW - oppUsedW;
 
-	double dynamicGamma = calculateDynamicGamma(static_cast<int>(itemIds.size()), game.getTurnNumber());
+	// Dynamic factor determining how critical remaining space footprint is
+	double mySpaceUrgency = 1.0 - (static_cast<double>(remS + remW) / static_cast<double>(totalS + totalW));
+	double oppSpaceUrgency = 1.0 - (static_cast<double>(oppRemS + oppRemW) / static_cast<double>(totalS + totalW));
 
 	candidatesPool.clear();
 	const size_t numTotalItems = itemIds.size();
+
+	// Find top structural choices for opponent beforehand in O(N) to gauge threat vectors
+	int oppBestIdx1 = -1;
+	double oppBestScore1 = -1.0;
 
 #pragma GCC unroll 4
 	for (size_t i = 0; i < numTotalItems; ++i) {
@@ -153,8 +68,36 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 		size_t bit = static_cast<size_t>(id) & 63;
 		bool isAvailable = (bitset[chunk] & (1ULL << bit)) != 0;
 
+		if (isAvailable) {
+			if (sizes[i] <= oppRemS && weights[i] <= oppRemW) {
+				double s = evaluateScore(costs[i], sizes[i], weights[i], oppRemS, oppRemW, oppSpaceUrgency);
+				if (s > oppBestScore1) {
+					oppBestScore1 = s;
+					oppBestIdx1 = static_cast<int>(i);
+				}
+			}
+		}
+	}
+
+	// Evaluate my candidates using branchless marginal regret calculations
+#pragma GCC unroll 4
+	for (size_t i = 0; i < numTotalItems; ++i) {
+		int id = itemIds[i];
+		size_t chunk = static_cast<size_t>(id) >> 6;
+		size_t bit = static_cast<size_t>(id) & 63;
+		bool isAvailable = (bitset[chunk] & (1ULL << bit)) != 0;
+
 		if (isAvailable && sizes[i] <= remS && weights[i] <= remW) {
-			candidatesPool.push_back({ id, static_cast<int>(i), evaluateDensity(costs[i], sizes[i], weights[i], remS, remW) });
+			double myScore = evaluateScore(costs[i], sizes[i], weights[i], remS, remW, mySpaceUrgency);
+
+			// Regret minimization logic: how much do I deny the opponent by stealing this?
+			double denialBonus = 0.0;
+			if (oppBestIdx1 != -1) {
+				// If I take their absolute favorite item, the regret we inflict is massive
+				denialBonus = (static_cast<int>(i) == oppBestIdx1) ? oppBestScore1 * baseGamma : 0.0;
+			}
+
+			candidatesPool.push_back({ id, static_cast<int>(i), myScore + denialBonus });
 		}
 	}
 
@@ -164,37 +107,11 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 
 		std::partial_sort(candidatesPool.begin(), candidatesPool.begin() + limit, candidatesPool.end(),
 			[](const Candidate& a, const Candidate& b) noexcept {
-				return a.density > b.density;
+				return a.score > b.score;
 			}
 		);
 
-		double bestScore = -std::numeric_limits<double>::infinity();
-		int bestItemId = -1;
-
-		// Evaluate each candidate through deep flash rollout projections
-		for (int i = 0; i < limit; ++i) {
-			const auto& cand = candidatesPool[i];
-			int idx = cand.index;
-			size_t chunk = static_cast<size_t>(cand.id) >> 6;
-			size_t bit = static_cast<size_t>(cand.id) & 63;
-
-			// Prepare memory state for rollout simulation
-			std::copy(bitset.begin(), bitset.end(), rolloutBitset.begin());
-			rolloutBitset[chunk] &= ~(1ULL << bit); // Take item
-
-			double score = computeDeterministicRollout(
-				dynamicGamma, itemIds, sizes, weights, costs,
-				remS - sizes[idx], remW - weights[idx], oppRemS, oppRemW,
-				static_cast<double>(costs[idx]), 0.0
-			);
-
-			if (score > bestScore) {
-				bestScore = score;
-				bestItemId = cand.id;
-			}
-		}
-
-		finalChoice = bestItemId;
+		finalChoice = candidatesPool[0].id;
 	}
 
 	return finalChoice;
