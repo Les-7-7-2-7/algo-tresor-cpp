@@ -3,22 +3,41 @@
 #include <algorithm>
 
 void OneLookaheadStrategy::preprocess(Game& game) {
-	candidatesPool.reserve(game.getItemIds().size());
-}
+	const auto& itemIds = game.getItemIds();
+	const int* sizes = game.getSizesPtr();
+	const int* weights = game.getWeightsPtr();
+	const int* costs = game.getCostsPtr();
+	size_t numItems = itemIds.size();
 
-[[gnu::always_inline]] inline double OneLookaheadStrategy::evaluateScore(
-	int cost, int size, int weight, int remS, int remW, double spaceUrgency) const noexcept {
+	candidatesPool.reserve(numItems);
 
-	double score = 0.0;
-	if (remS > 0 && remW > 0) {
-		// Space structural friction penalty fraction
-		double sizeCost = static_cast<double>(size) / remS;
-		double weightCost = static_cast<double>(weight) / remW;
-
-		// Combines items immediate cost value with a penalty for choking remaining space
-		score = static_cast<double>(cost) / (1.0 + spaceUrgency * (sizeCost + weightCost));
+	// 1. Core Macro Resource Scarcity Analysis
+	double totalGameSize = 0.0;
+	double totalGameWeight = 0.0;
+#pragma GCC unroll 4
+	for (size_t i = 0; i < numItems; ++i) {
+		totalGameSize += sizes[i];
+		totalGameWeight += weights[i];
 	}
-	return score;
+
+	// Determine which dimension restricts the board configuration state space the most
+	double sizeScarcityFactor = static_cast<double>(game.getSizeCapacity()) / (totalGameSize + 1.0);
+	double weightScarcityFactor = static_cast<double>(game.getWeightCapacity()) / (totalGameWeight + 1.0);
+
+	// Low factor means the resource is extremely rare and highly contested
+	double alphaS = 1.0 / (sizeScarcityFactor + 1e-6);
+	double alphaW = 1.0 / (weightScarcityFactor + 1e-6);
+	double totalAlpha = alphaS + alphaW;
+	alphaS /= totalAlpha;
+	alphaW /= totalAlpha;
+
+	// 2. Oracle Bounds Valuation Graph mapping
+#pragma GCC unroll 4
+	for (size_t i = 0; i < numItems; ++i) {
+		double resourceCost = (alphaS * sizes[i]) + (alphaW * weights[i]);
+		double score = static_cast<double>(costs[i]) / (resourceCost + 1e-6);
+		game.updateOracleScoreInSoA(static_cast<int>(i), score);
+	}
 }
 
 int OneLookaheadStrategy::pickItem(Game& game) {
@@ -36,6 +55,7 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 	const int* sizes = game.getSizesPtr();
 	const int* weights = game.getWeightsPtr();
 	const int* costs = game.getCostsPtr();
+	const double* oracleScores = game.getOracleScoresPtr();
 	const auto& itemIds = game.getItemIds();
 	const auto& bitset = game.getBitset();
 
@@ -50,17 +70,12 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 	const int oppRemS = totalS - oppUsedS;
 	const int oppRemW = totalW - oppUsedW;
 
-	// Dynamic factor determining how critical remaining space footprint is
-	double mySpaceUrgency = 1.0 - (static_cast<double>(remS + remW) / static_cast<double>(totalS + totalW));
-	double oppSpaceUrgency = 1.0 - (static_cast<double>(oppRemS + oppRemW) / static_cast<double>(totalS + totalW));
-
 	candidatesPool.clear();
 	const size_t numTotalItems = itemIds.size();
 
-	// Find top structural choices for opponent beforehand in O(N) to gauge threat vectors
+	// Find the opponent's absolute highest threat target in O(N)
 	int oppBestIdx1 = -1;
-	double oppBestScore1 = -1.0;
-
+	double oppMaxOracle = -1.0;
 #pragma GCC unroll 4
 	for (size_t i = 0; i < numTotalItems; ++i) {
 		int id = itemIds[i];
@@ -68,18 +83,15 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 		size_t bit = static_cast<size_t>(id) & 63;
 		bool isAvailable = (bitset[chunk] & (1ULL << bit)) != 0;
 
-		if (isAvailable) {
-			if (sizes[i] <= oppRemS && weights[i] <= oppRemW) {
-				double s = evaluateScore(costs[i], sizes[i], weights[i], oppRemS, oppRemW, oppSpaceUrgency);
-				if (s > oppBestScore1) {
-					oppBestScore1 = s;
-					oppBestIdx1 = static_cast<int>(i);
-				}
+		if (isAvailable && sizes[i] <= oppRemS && weights[i] <= oppRemW) {
+			if (oracleScores[i] > oppMaxOracle) {
+				oppMaxOracle = oracleScores[i];
+				oppBestIdx1 = static_cast<int>(i);
 			}
 		}
 	}
 
-	// Evaluate my candidates using branchless marginal regret calculations
+	// Evaluate my valid choices incorporating branchless threat interference bonuses
 #pragma GCC unroll 4
 	for (size_t i = 0; i < numTotalItems; ++i) {
 		int id = itemIds[i];
@@ -88,30 +100,29 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 		bool isAvailable = (bitset[chunk] & (1ULL << bit)) != 0;
 
 		if (isAvailable && sizes[i] <= remS && weights[i] <= remW) {
-			double myScore = evaluateScore(costs[i], sizes[i], weights[i], remS, remW, mySpaceUrgency);
+			double myBaseScore = oracleScores[i];
 
-			// Regret minimization logic: how much do I deny the opponent by stealing this?
-			double denialBonus = 0.0;
-			if (oppBestIdx1 != -1) {
-				// If I take their absolute favorite item, the regret we inflict is massive
-				denialBonus = (static_cast<int>(i) == oppBestIdx1) ? oppBestScore1 * baseGamma : 0.0;
-			}
+			// Strategic denial logic: if this item is exactly what opponent wants most, increase priority
+			double denialRegretBonus = (static_cast<int>(i) == oppBestIdx1) ? oppMaxOracle * baseGamma : 0.0;
 
-			candidatesPool.push_back({ id, static_cast<int>(i), myScore + denialBonus });
+			candidatesPool.push_back({ id, static_cast<int>(i), myBaseScore + denialRegretBonus });
 		}
 	}
 
 	if (!candidatesPool.empty()) {
-		const int totalCandidates = static_cast<int>(candidatesPool.size());
-		const int limit = std::min(candidateLimit, totalCandidates);
+		// Linear single-scan extraction of the absolute best element (Faster than sorting)
+		double maxCandidateScore = -1.0;
+		int bestPoolIndex = 0;
+		size_t poolSize = candidatesPool.size();
 
-		std::partial_sort(candidatesPool.begin(), candidatesPool.begin() + limit, candidatesPool.end(),
-			[](const Candidate& a, const Candidate& b) noexcept {
-				return a.score > b.score;
+#pragma GCC unroll 4
+		for (size_t i = 0; i < poolSize; ++i) {
+			if (candidatesPool[i].score > maxCandidateScore) {
+				maxCandidateScore = candidatesPool[i].score;
+				bestPoolIndex = static_cast<int>(i);
 			}
-		);
-
-		finalChoice = candidatesPool[0].id;
+		}
+		finalChoice = candidatesPool[static_cast<size_t>(bestPoolIndex)].id;
 	}
 
 	return finalChoice;

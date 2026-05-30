@@ -5,7 +5,7 @@ class Game;
 
 class Strategy {
 public:
-	virtual ~Strategy() {}
+	virtual ~Strategy() = default;
 	virtual void preprocess(Game& game) = 0;
 	virtual int pickItem(Game& game) = 0;
 };

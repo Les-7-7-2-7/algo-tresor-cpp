@@ -5,21 +5,15 @@
 #include "Strategy.hpp"
 #include <vector>
 #include <memory>
-#include <string_view>
 #include <cstdint>
 
 class Game {
 private:
-	static constexpr std::string_view RESET = "\033[0m";
-	static constexpr std::string_view CYAN = "\033[36m";
-	static constexpr std::string_view GREEN = "\033[32m";
-	static constexpr std::string_view RED = "\033[31m";
-	static constexpr std::string_view YELLOW = "\033[33m";
-
 	alignas(64) std::vector<int> itemIds;
 	alignas(64) std::vector<int> itemSizes;
 	alignas(64) std::vector<int> itemWeights;
 	alignas(64) std::vector<int> itemCosts;
+	alignas(64) std::vector<double> itemOracleScores;
 
 	std::vector<uint64_t> availabilityBitset;
 	std::vector<int> idToIndex;
@@ -39,7 +33,7 @@ private:
 
 public:
 	Game(int numberItems, int sCapacity, int wCapacity, std::unique_ptr<Strategy> strat);
-	~Game();
+	~Game() = default;
 
 	void addItem(const Item& item);
 	void preprocess();
@@ -57,9 +51,14 @@ public:
 	[[nodiscard]] const int* getSizesPtr() const noexcept { return itemSizes.data(); }
 	[[nodiscard]] const int* getWeightsPtr() const noexcept { return itemWeights.data(); }
 	[[nodiscard]] const int* getCostsPtr() const noexcept { return itemCosts.data(); }
+	[[nodiscard]] const double* getOracleScoresPtr() const noexcept { return itemOracleScores.data(); }
 
 	[[nodiscard]] const std::vector<uint64_t>& getBitset() const noexcept { return availabilityBitset; }
 	[[nodiscard]] const std::vector<int>& getIdToIndexMap() const noexcept { return idToIndex; }
+
+	void updateOracleScoreInSoA(int index, double score) noexcept {
+		itemOracleScores[static_cast<size_t>(index)] = score;
+	}
 
 	[[nodiscard]] [[gnu::always_inline]] inline bool isItemAvailable(int id) const noexcept {
 		size_t chunk = static_cast<size_t>(id) >> 6;
