@@ -6,7 +6,6 @@ void OneLookaheadStrategy::preprocess(Game& game) {
 	size_t totalItems = game.getItemIds().size();
 	candidatesPool.reserve(totalItems);
 
-	// Allocate bitsets storage space for each recursive layer of the minimax tree
 	layeredBitsets.resize(static_cast<size_t>(maxDepth) + 1);
 #pragma GCC unroll 4
 	for (int i = 0; i <= maxDepth; ++i) {
@@ -27,29 +26,28 @@ void OneLookaheadStrategy::preprocess(Game& game) {
 	double progress = static_cast<double>(currentTurn) / static_cast<double>(std::max(1, totalItems));
 	double gamma = baseGamma;
 
-	// Phase-Aware context shifting logic
-	if (progress < 0.25) {
-		gamma = baseGamma * 0.7; // Early game: Focus slightly more on personal accumulation
+	if (progress < 0.20) {
+		gamma = baseGamma * 0.5; // Early game: Focus mostly on your own high value capacity
 	}
-	else if (progress > 0.75) {
-		gamma = 0.0;             // Endgame: Avoid blocking, greedily pack remaining empty slots
+	else if (progress > 0.80) {
+		gamma = 0.0;             // Endgame: Avoid defensive plays, just fill remaining spots
 	}
 	else {
-		gamma = baseGamma * 1.4; // Midgame: Aggressively deny critical resources
+		gamma = baseGamma * 1.5; // Midgame: Highly aggressive denial to destroy opponent options
 	}
 	return gamma;
 }
 
-double OneLookaheadStrategy::evaluateMinimax(
-	int depth, bool isMaxPlayer, double gamma,
+double OneLookaheadStrategy::evaluateAlphaBeta(
+	int depth, bool isMaxPlayer, double gamma, double alpha, double beta,
 	const std::vector<int>& itemIds, const int* sizes, const int* weights, const int* costs,
-	int myRemS, int myRemW, int oppRemS, int oppRemW) noexcept {
+	int myRemS, int myRemW, int oppRemS, int oppRemW, double myAccumulatedScore, double oppAccumulatedScore) noexcept {
 
 	double outputValue = 0.0;
 
-	// Base condition evaluation
+	// Terminal node evaluation: Returns actual absolute terminal state delta score
 	if (depth == maxDepth || (myRemS <= 0 && myRemW <= 0 && oppRemS <= 0 && oppRemW <= 0)) {
-		outputValue = 0.0;
+		outputValue = myAccumulatedScore - (gamma * oppAccumulatedScore);
 	}
 	else {
 		size_t currentLayer = static_cast<size_t>(depth);
@@ -57,23 +55,14 @@ double OneLookaheadStrategy::evaluateMinimax(
 		const auto& currentBitset = layeredBitsets[currentLayer];
 		auto& nextBitset = layeredBitsets[nextLayer];
 
-		// Sync next state mask with current state mask
 		std::copy(currentBitset.begin(), currentBitset.end(), nextBitset.begin());
-
 		size_t numTotalItems = itemIds.size();
-		int activeCandidacyLimit = 4; // Intentionally narrow tree width to keep it O(1) matching real-time constraints
-
-		struct ScoredNode {
-			int index;
-			double heuristic;
-		};
-		alignas(16) ScoredNode branches[16];
-		int branchCount = 0;
 
 		if (isMaxPlayer) {
-			outputValue = -std::numeric_limits<double>::infinity();
+			double maxEval = -std::numeric_limits<double>::infinity();
+			bool hasValidMove = false;
+			double localAlpha = alpha;
 
-#pragma GCC unroll 4
 			for (size_t i = 0; i < numTotalItems; ++i) {
 				int id = itemIds[i];
 				size_t chunk = static_cast<size_t>(id) >> 6;
@@ -81,43 +70,37 @@ double OneLookaheadStrategy::evaluateMinimax(
 				bool isAvailable = (currentBitset[chunk] & (1ULL << bit)) != 0;
 
 				if (isAvailable && sizes[i] <= myRemS && weights[i] <= myRemW) {
-					double h = evaluateDensity(costs[i], sizes[i], weights[i], myRemS, myRemW);
-					if (branchCount < activeCandidacyLimit) {
-						branches[branchCount++] = { static_cast<int>(i), h };
+					hasValidMove = true;
+					nextBitset[chunk] &= ~(1ULL << bit); // Execute move
+
+					double eval = evaluateAlphaBeta(
+						depth + 1, false, gamma, localAlpha, beta, itemIds, sizes, weights, costs,
+						myRemS - sizes[i], myRemW - weights[i], oppRemS, oppRemW,
+						myAccumulatedScore + costs[i], oppAccumulatedScore
+					);
+
+					maxEval = std::max(maxEval, eval);
+					localAlpha = std::max(localAlpha, eval);
+					nextBitset[chunk] |= (1ULL << bit); // Backtrack
+
+					if (beta <= localAlpha) {
+						break; // Beta cut-off
 					}
 				}
 			}
 
-			if (branchCount > 0) {
-#pragma GCC unroll 4
-				for (int i = 0; i < branchCount; ++i) {
-					int idx = branches[i].index;
-					int id = itemIds[static_cast<size_t>(idx)];
-					size_t chunk = static_cast<size_t>(id) >> 6;
-					size_t bit = static_cast<size_t>(id) & 63;
-
-					nextBitset[chunk] &= ~(1ULL << bit); // Move simulation
-
-					double value = branches[i].heuristic + evaluateMinimax(
-						depth + 1, false, gamma, itemIds, sizes, weights, costs,
-						myRemS - sizes[idx], myRemW - weights[idx], oppRemS, oppRemW
-					);
-
-					outputValue = std::max(outputValue, value);
-					nextBitset[chunk] |= (1ULL << bit); // Unmove backtracking
-				}
-			}
-			else {
-				// If forced to pass, evaluate opponent reactions directly
-				outputValue = evaluateMinimax(depth + 1, false, gamma, itemIds, sizes, weights, costs, myRemS, myRemW, oppRemS, oppRemW);
-			}
+			// Single entry, single exit assignment mapping
+			outputValue = hasValidMove ? maxEval : evaluateAlphaBeta(
+				depth + 1, false, gamma, localAlpha, beta, itemIds, sizes, weights, costs,
+				myRemS, myRemW, oppRemS, oppRemW, myAccumulatedScore, oppAccumulatedScore
+			);
 
 		}
 		else {
-			// Opponent's turn minification evaluation layer
-			outputValue = std::numeric_limits<double>::infinity();
+			double minEval = std::numeric_limits<double>::infinity();
+			bool hasValidMove = false;
+			double localBeta = beta;
 
-#pragma GCC unroll 4
 			for (size_t i = 0; i < numTotalItems; ++i) {
 				int id = itemIds[i];
 				size_t chunk = static_cast<size_t>(id) >> 6;
@@ -125,36 +108,29 @@ double OneLookaheadStrategy::evaluateMinimax(
 				bool isAvailable = (currentBitset[chunk] & (1ULL << bit)) != 0;
 
 				if (isAvailable && sizes[i] <= oppRemS && weights[i] <= oppRemW) {
-					double h = evaluateDensity(costs[i], sizes[i], weights[i], oppRemS, oppRemW);
-					if (branchCount < activeCandidacyLimit) {
-						branches[branchCount++] = { static_cast<int>(i), h };
+					hasValidMove = true;
+					nextBitset[chunk] &= ~(1ULL << bit);
+
+					double eval = evaluateAlphaBeta(
+						depth + 1, true, gamma, alpha, localBeta, itemIds, sizes, weights, costs,
+						myRemS, myRemW, oppRemS - sizes[i], oppRemW - weights[i],
+						myAccumulatedScore, oppAccumulatedScore + costs[i]
+					);
+
+					minEval = std::min(minEval, eval);
+					localBeta = std::min(localBeta, eval);
+					nextBitset[chunk] |= (1ULL << bit);
+
+					if (localBeta <= alpha) {
+						break; // Alpha cut-off
 					}
 				}
 			}
 
-			if (branchCount > 0) {
-#pragma GCC unroll 4
-				for (int i = 0; i < branchCount; ++i) {
-					int idx = branches[i].index;
-					int id = itemIds[static_cast<size_t>(idx)];
-					size_t chunk = static_cast<size_t>(id) >> 6;
-					size_t bit = static_cast<size_t>(id) & 63;
-
-					nextBitset[chunk] &= ~(1ULL << bit);
-
-					// Adversary's value scales down overall game value based on dynamic denial weight parameter
-					double value = (-gamma * branches[i].heuristic) + evaluateMinimax(
-						depth + 1, true, gamma, itemIds, sizes, weights, costs,
-						myRemS, myRemW, oppRemS - sizes[idx], oppRemW - weights[idx]
-					);
-
-					outputValue = std::min(outputValue, value);
-					nextBitset[chunk] |= (1ULL << bit);
-				}
-			}
-			else {
-				outputValue = evaluateMinimax(depth + 1, true, gamma, itemIds, sizes, weights, costs, myRemS, myRemW, oppRemS, oppRemW);
-			}
+			outputValue = hasValidMove ? minEval : evaluateAlphaBeta(
+				depth + 1, true, gamma, alpha, localBeta, itemIds, sizes, weights, costs,
+				myRemS, myRemW, oppRemS, oppRemW, myAccumulatedScore, oppAccumulatedScore
+			);
 		}
 	}
 
@@ -188,7 +164,6 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 	const int oppRemS = game.getSizeCapacity() - oppUsedS;
 	const int oppRemW = game.getWeightCapacity() - oppUsedW;
 
-	// Contextual Phase-Aware parameter mutation
 	double dynamicGamma = calculateDynamicGamma(static_cast<int>(itemIds.size()), game.getTurnNumber());
 
 	candidatesPool.clear();
@@ -210,6 +185,7 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 		const int totalCandidates = static_cast<int>(candidatesPool.size());
 		const int limit = std::min(candidateLimit, totalCandidates);
 
+		// Sort candidates to optimize Alpha-Beta cuts (Pruning triggers significantly faster)
 		std::partial_sort(candidatesPool.begin(), candidatesPool.begin() + limit, candidatesPool.end(),
 			[](const Candidate& a, const Candidate& b) noexcept {
 				return a.density > b.density;
@@ -217,25 +193,24 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 		);
 
 		double bestScore = -std::numeric_limits<double>::infinity();
-		int bestItemId = candidatesPool[0].id;
+		int bestItemId = -1;
 
-		// Synchronize base layer state mask before expanding minimax tree branches
 		std::copy(bitset.begin(), bitset.end(), layeredBitsets[0].begin());
 
-#pragma GCC unroll 4
 		for (int i = 0; i < limit; ++i) {
 			const auto& cand = candidatesPool[i];
 			int idx = cand.index;
 			size_t chunk = static_cast<size_t>(cand.id) >> 6;
 			size_t bit = static_cast<size_t>(cand.id) & 63;
 
-			// Invalidate item in simulated layer 1
 			layeredBitsets[1][chunk] = layeredBitsets[0][chunk] & ~(1ULL << bit);
 
-			// Branch computation: evaluate lookahead depth trajectories
-			double score = cand.density + evaluateMinimax(
-				1, false, dynamicGamma, itemIds, sizes, weights, costs,
-				remS - sizes[idx], remW - weights[idx], oppRemS, oppRemW
+			// Invoke absolute state Alpha-Beta search instead of local densities aggregation
+			double score = evaluateAlphaBeta(
+				1, false, dynamicGamma, -std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(),
+				itemIds, sizes, weights, costs,
+				remS - sizes[idx], remW - weights[idx], oppRemS, oppRemW,
+				static_cast<double>(costs[idx]), 0.0
 			);
 
 			if (score > bestScore) {
