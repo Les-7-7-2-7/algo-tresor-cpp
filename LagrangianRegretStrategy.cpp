@@ -66,18 +66,45 @@ int LagrangianRegretStrategy::pickItem(Game& game) {
 	const int oppRemS = totalS - oppUsedS;
 	const int oppRemW = totalW - oppUsedW;
 
+	// Calculate real-time item pool depletion ratios
+	double remainingPoolSize = 0.0;
+	double remainingPoolWeight = 0.0;
+	const size_t numTotalItems = itemIds.size();
+
+#pragma GCC unroll 4
+	for (size_t i = 0; i < numTotalItems; ++i) {
+		int id = itemIds[i];
+		size_t chunk = static_cast<size_t>(id) >> 6;
+		size_t bit = static_cast<size_t>(id) & 63;
+		bool isAvailable = (bitset[chunk] & (1ULL << bit)) != 0;
+
+		if (isAvailable) {
+			remainingPoolSize += sizes[i];
+			remainingPoolWeight += weights[i];
+		}
+	}
+
+	double currentScarcityS = static_cast<double>(remS + oppRemS) / (remainingPoolSize + 1.0);
+	double currentScarcityW = static_cast<double>(remW + oppRemW) / (remainingPoolWeight + 1.0);
+
+	double dynamicMuS = 1.0 / (currentScarcityS + 1e-5);
+	double dynamicMuW = 1.0 / (currentScarcityW + 1e-5);
+	double dynamicMuTotal = dynamicMuS + dynamicMuW;
+	dynamicMuS /= dynamicMuTotal;
+	dynamicMuW /= dynamicMuTotal;
+
 	double myFullness = 1.0 - (static_cast<double>(remS + remW) / static_cast<double>(totalS + totalW));
 	double currentAlpha = alpha;
 
-	if (myFullness > 0.80) {
+	if (myFullness > 0.82) {
 		currentAlpha = 0.0;
 	}
 
 	evaluationPool.clear();
-	const size_t numTotalItems = itemIds.size();
 
+	// 1. Scan to find the opponent's absolute highest target based on integrated utility matrix
 	int oppTargetIdx = -1;
-	double maxOppUtility = -1.0;
+	double maxOppValueScore = -1.0;
 #pragma GCC unroll 4
 	for (size_t i = 0; i < numTotalItems; ++i) {
 		int id = itemIds[i];
@@ -86,13 +113,17 @@ int LagrangianRegretStrategy::pickItem(Game& game) {
 		bool isAvailable = (bitset[chunk] & (1ULL << bit)) != 0;
 
 		if (isAvailable && sizes[i] <= oppRemS && weights[i] <= oppRemW) {
-			if (utilities[i] > maxOppUtility) {
-				maxOppUtility = utilities[i];
+			double oppOppCost = (dynamicMuS * sizes[i]) + (dynamicMuW * weights[i]);
+			// Multiplies the baseline structural utility by the instant market volatility multiplier
+			double oppScore = utilities[i] * (1.0 / (oppOppCost + 1e-5));
+			if (oppScore > maxOppValueScore) {
+				maxOppValueScore = oppScore;
 				oppTargetIdx = static_cast<int>(i);
 			}
 		}
 	}
 
+	// 2. Evaluate my choices combining precalculated utility, time tension, and dynamic regret bonus
 #pragma GCC unroll 4
 	for (size_t i = 0; i < numTotalItems; ++i) {
 		int id = itemIds[i];
@@ -101,12 +132,16 @@ int LagrangianRegretStrategy::pickItem(Game& game) {
 		bool isAvailable = (bitset[chunk] & (1ULL << bit)) != 0;
 
 		if (isAvailable && sizes[i] <= remS && weights[i] <= remW) {
-			double myBaseScore = utilities[i];
-			double denialRegretValue = (static_cast<int>(i) == oppTargetIdx) ? maxOppUtility * currentAlpha : 0.0;
-			double spacingPenalty = (static_cast<double>(sizes[i]) / remS) + (static_cast<double>(weights[i]) / remW);
-			double dynamicScore = myBaseScore + denialRegretValue - (myFullness * spacingPenalty * 0.1);
+			double myOppCost = (dynamicMuS * sizes[i]) + (dynamicMuW * weights[i]);
+			// Integrated score: base lagrangian utility dynamically adjusted by the current turn friction
+			double myDynamicScore = utilities[i] * (1.0 / (myOppCost + 1e-5));
 
-			evaluationPool.push_back({ id, static_cast<int>(i), dynamicScore });
+			double denialRegretValue = (static_cast<int>(i) == oppTargetIdx) ? maxOppValueScore * currentAlpha : 0.0;
+			double spacingPenalty = (static_cast<double>(sizes[i]) / remS) + (static_cast<double>(weights[i]) / remW);
+
+			double dynamicFinalScore = myDynamicScore + denialRegretValue - (myFullness * spacingPenalty * 0.15);
+
+			evaluationPool.push_back({ id, static_cast<int>(i), dynamicFinalScore });
 		}
 	}
 
