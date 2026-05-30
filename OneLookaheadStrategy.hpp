@@ -14,21 +14,27 @@ private:
 		double density;
 	};
 
-	double gamma;
+	double baseGamma;
 	int candidateLimit;
+	int maxDepth;
 
 	std::vector<Candidate> candidatesPool;
+	// Layered bitset pool to simulate inventory modification without dynamic allocation overhead
+	std::vector<std::vector<uint64_t>> layeredBitsets;
 
 	[[nodiscard]] [[gnu::always_inline]] inline double evaluateDensity(int cost, int size, int weight, int remS, int remW) const noexcept;
 
-	[[nodiscard]] [[gnu::always_inline]] inline int bestOpponentIndex(
+	[[nodiscard]] [[gnu::always_inline]] inline double calculateDynamicGamma(int totalItems, int currentTurn) const noexcept;
+
+	// Recursive Minimax evaluation engine with narrow candidate branching
+	[[nodiscard]] double evaluateMinimax(
+		int depth, bool isMaxPlayer, double gamma,
 		const std::vector<int>& itemIds, const int* sizes, const int* weights, const int* costs,
-		const std::vector<uint64_t>& bitset, const std::vector<int>& idToIdx,
-		int oppRemS, int oppRemW, int excludedId = -1) const noexcept;
+		int myRemS, int myRemW, int oppRemS, int oppRemW) noexcept;
 
 public:
-	explicit OneLookaheadStrategy(double g = 0.5, int limit = 60) noexcept
-		: gamma(g), candidateLimit(limit) {
+	explicit OneLookaheadStrategy(double g = 0.5, int limit = 30, int depth = 3) noexcept
+		: baseGamma(g), candidateLimit(limit), maxDepth(depth) {
 	}
 
 	void preprocess(Game& game) override;

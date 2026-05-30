@@ -16,13 +16,11 @@ private:
 	static constexpr std::string_view RED = "\033[31m";
 	static constexpr std::string_view YELLOW = "\033[33m";
 
-	// Structure of Arrays (SoA) layout for high-density SIMD/AVX cache friendliness
 	alignas(64) std::vector<int> itemIds;
 	alignas(64) std::vector<int> itemSizes;
 	alignas(64) std::vector<int> itemWeights;
 	alignas(64) std::vector<int> itemCosts;
 
-	// Bitset optimization using native uint64_t chunks instead of std::vector<bool>
 	std::vector<uint64_t> availabilityBitset;
 	std::vector<int> idToIndex;
 
@@ -48,11 +46,11 @@ public:
 	void opponentTook(int id);
 	int pickItem();
 
-	// High performance getters exposing raw aligned pointers for SIMD operations
 	[[nodiscard]] int getRemainingWeight() const noexcept { return weightCapacity - currentWeight; }
 	[[nodiscard]] int getRemainingSize() const noexcept { return sizeCapacity - currentSize; }
 	[[nodiscard]] int getSizeCapacity() const noexcept { return sizeCapacity; }
 	[[nodiscard]] int getWeightCapacity() const noexcept { return weightCapacity; }
+	[[nodiscard]] int getTurnNumber() const noexcept { return turnNumber; }
 
 	[[nodiscard]] const std::vector<int>& getOpponentItemIds() const noexcept { return opponentItemIds; }
 	[[nodiscard]] const std::vector<int>& getItemIds() const noexcept { return itemIds; }

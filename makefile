@@ -1,15 +1,12 @@
-# Compilateur et options globales
 CXX      := g++
 CXXFLAGS := -std=c++23 -O3 -march=native -flto -fno-plt \
             -funroll-loops -finline-functions \
             -Wall -Wextra -Wpedantic -Wshadow -Wconversion
 
-# Dossiers du projet
 SRC_DIR := .
 OBJ_DIR := obj
 ASM_DIR := asm
 
-# Fichiers sources et cibles
 SRCS := $(wildcard $(SRC_DIR)/*.cpp)
 OBJS := $(SRCS:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
 ASMS := $(SRCS:$(SRC_DIR)/%.cpp=$(ASM_DIR)/%.s)
