@@ -5,12 +5,7 @@
 void OneLookaheadStrategy::preprocess(Game& game) {
 	size_t totalItems = game.getItemIds().size();
 	candidatesPool.reserve(totalItems);
-
-	layeredBitsets.resize(static_cast<size_t>(maxDepth) + 1);
-#pragma GCC unroll 4
-	for (int i = 0; i <= maxDepth; ++i) {
-		layeredBitsets[static_cast<size_t>(i)].resize(game.getBitset().size(), 0ULL);
-	}
+	rolloutBitset.resize(game.getBitset().size(), 0ULL);
 }
 
 [[gnu::always_inline]] inline double OneLookaheadStrategy::evaluateDensity(int cost, int size, int weight, int remS, int remW) const noexcept {
@@ -26,115 +21,97 @@ void OneLookaheadStrategy::preprocess(Game& game) {
 	double progress = static_cast<double>(currentTurn) / static_cast<double>(std::max(1, totalItems));
 	double gamma = baseGamma;
 
-	if (progress < 0.20) {
-		gamma = baseGamma * 0.5; // Early game: Focus mostly on your own high value capacity
+	if (progress < 0.15) {
+		gamma = baseGamma * 0.4; // Early game: Focus heavily on own inventory optimization
 	}
 	else if (progress > 0.80) {
-		gamma = 0.0;             // Endgame: Avoid defensive plays, just fill remaining spots
+		gamma = 0.0;             // Endgame: Absolute greed, ignore opponent entirely
 	}
 	else {
-		gamma = baseGamma * 1.5; // Midgame: Highly aggressive denial to destroy opponent options
+		gamma = baseGamma * 1.6; // Midgame: Maximum defensive denial interference
 	}
 	return gamma;
 }
 
-double OneLookaheadStrategy::evaluateAlphaBeta(
-	int depth, bool isMaxPlayer, double gamma, double alpha, double beta,
-	const std::vector<int>& itemIds, const int* sizes, const int* weights, const int* costs,
-	int myRemS, int myRemW, int oppRemS, int oppRemW, double myAccumulatedScore, double oppAccumulatedScore) noexcept {
+double OneLookaheadStrategy::computeDeterministicRollout(
+	double gamma, const std::vector<int>& itemIds, const int* sizes, const int* weights, const int* costs,
+	int initialMyRemS, int initialMyRemW, int initialOppRemS, int initialOppRemW,
+	double initialMyScore, double initialOppScore) noexcept {
 
-	double outputValue = 0.0;
+	int myRemS = initialMyRemS;
+	int myRemW = initialMyRemW;
+	int oppRemS = initialOppRemS;
+	int oppRemW = initialOppRemW;
+	double myScore = initialMyScore;
+	double oppScore = initialOppScore;
 
-	// Terminal node evaluation: Returns actual absolute terminal state delta score
-	if (depth == maxDepth || (myRemS <= 0 && myRemW <= 0 && oppRemS <= 0 && oppRemW <= 0)) {
-		outputValue = myAccumulatedScore - (gamma * oppAccumulatedScore);
-	}
-	else {
-		size_t currentLayer = static_cast<size_t>(depth);
-		size_t nextLayer = currentLayer + 1;
-		const auto& currentBitset = layeredBitsets[currentLayer];
-		auto& nextBitset = layeredBitsets[nextLayer];
+	const size_t numTotalItems = itemIds.size();
+	bool gameStillActive = true;
 
-		std::copy(currentBitset.begin(), currentBitset.end(), nextBitset.begin());
-		size_t numTotalItems = itemIds.size();
+	// High speed flash rollout loop simulating endgame mechanics
+	while (gameStillActive) {
+		gameStillActive = false;
 
-		if (isMaxPlayer) {
-			double maxEval = -std::numeric_limits<double>::infinity();
-			bool hasValidMove = false;
-			double localAlpha = alpha;
+		int bestMyIdx = -1;
+		double bestMyDensity = -1.0;
+		int bestOppIdx = -1;
+		double bestOppDensity = -1.0;
 
-			for (size_t i = 0; i < numTotalItems; ++i) {
-				int id = itemIds[i];
-				size_t chunk = static_cast<size_t>(id) >> 6;
-				size_t bit = static_cast<size_t>(id) & 63;
-				bool isAvailable = (currentBitset[chunk] & (1ULL << bit)) != 0;
+		// Linear scan leveraging cached SoA layout pointers in CPU L1 cache
+#pragma GCC unroll 4
+		for (size_t i = 0; i < numTotalItems; ++i) {
+			int id = itemIds[i];
+			size_t chunk = static_cast<size_t>(id) >> 6;
+			size_t bit = static_cast<size_t>(id) & 63;
+			bool isAvailable = (rolloutBitset[chunk] & (1ULL << bit)) != 0;
 
-				if (isAvailable && sizes[i] <= myRemS && weights[i] <= myRemW) {
-					hasValidMove = true;
-					nextBitset[chunk] &= ~(1ULL << bit); // Execute move
-
-					double eval = evaluateAlphaBeta(
-						depth + 1, false, gamma, localAlpha, beta, itemIds, sizes, weights, costs,
-						myRemS - sizes[i], myRemW - weights[i], oppRemS, oppRemW,
-						myAccumulatedScore + costs[i], oppAccumulatedScore
-					);
-
-					maxEval = std::max(maxEval, eval);
-					localAlpha = std::max(localAlpha, eval);
-					nextBitset[chunk] |= (1ULL << bit); // Backtrack
-
-					if (beta <= localAlpha) {
-						break; // Beta cut-off
+			if (isAvailable) {
+				// Evaluate best choice for me in this simulation state
+				if (sizes[i] <= myRemS && weights[i] <= myRemW) {
+					double d = evaluateDensity(costs[i], sizes[i], weights[i], myRemS, myRemW);
+					if (d > bestMyDensity) {
+						bestMyDensity = d;
+						bestMyIdx = static_cast<int>(i);
+					}
+				}
+				// Evaluate best choice for the opponent in this simulation state
+				if (sizes[i] <= oppRemS && weights[i] <= oppRemW) {
+					double d = evaluateDensity(costs[i], sizes[i], weights[i], oppRemS, oppRemW);
+					if (d > bestOppDensity) {
+						bestOppDensity = d;
+						bestOppIdx = static_cast<int>(i);
 					}
 				}
 			}
-
-			// Single entry, single exit assignment mapping
-			outputValue = hasValidMove ? maxEval : evaluateAlphaBeta(
-				depth + 1, false, gamma, localAlpha, beta, itemIds, sizes, weights, costs,
-				myRemS, myRemW, oppRemS, oppRemW, myAccumulatedScore, oppAccumulatedScore
-			);
-
 		}
-		else {
-			double minEval = std::numeric_limits<double>::infinity();
-			bool hasValidMove = false;
-			double localBeta = beta;
 
-			for (size_t i = 0; i < numTotalItems; ++i) {
-				int id = itemIds[i];
-				size_t chunk = static_cast<size_t>(id) >> 6;
-				size_t bit = static_cast<size_t>(id) & 63;
-				bool isAvailable = (currentBitset[chunk] & (1ULL << bit)) != 0;
+		// Apply best greedy move for Me if available
+		if (bestMyIdx != -1) {
+			int id = itemIds[static_cast<size_t>(bestMyIdx)];
+			rolloutBitset[static_cast<size_t>(id) >> 6] &= ~(1ULL << (static_cast<size_t>(id) & 63));
+			myRemS -= sizes[bestMyIdx];
+			myRemW -= weights[bestMyIdx];
+			myScore += costs[bestMyIdx];
+			gameStillActive = true;
+		}
 
-				if (isAvailable && sizes[i] <= oppRemS && weights[i] <= oppRemW) {
-					hasValidMove = true;
-					nextBitset[chunk] &= ~(1ULL << bit);
-
-					double eval = evaluateAlphaBeta(
-						depth + 1, true, gamma, alpha, localBeta, itemIds, sizes, weights, costs,
-						myRemS, myRemW, oppRemS - sizes[i], oppRemW - weights[i],
-						myAccumulatedScore, oppAccumulatedScore + costs[i]
-					);
-
-					minEval = std::min(minEval, eval);
-					localBeta = std::min(localBeta, eval);
-					nextBitset[chunk] |= (1ULL << bit);
-
-					if (localBeta <= alpha) {
-						break; // Alpha cut-off
-					}
-				}
+		// Apply best greedy move for the Opponent if available
+		if (bestOppIdx != -1) {
+			int id = itemIds[static_cast<size_t>(bestOppIdx)];
+			// Verify item wasn't just taken by me in the same phase step
+			size_t chunk = static_cast<size_t>(id) >> 6;
+			size_t bit = static_cast<size_t>(id) & 63;
+			if ((rolloutBitset[chunk] & (1ULL << bit)) != 0) {
+				rolloutBitset[chunk] &= ~(1ULL << bit);
+				oppRemS -= sizes[bestOppIdx];
+				oppRemW -= weights[bestOppIdx];
+				oppScore += costs[bestOppIdx];
+				gameStillActive = true;
 			}
-
-			outputValue = hasValidMove ? minEval : evaluateAlphaBeta(
-				depth + 1, true, gamma, alpha, localBeta, itemIds, sizes, weights, costs,
-				myRemS, myRemW, oppRemS, oppRemW, myAccumulatedScore, oppAccumulatedScore
-			);
 		}
 	}
 
-	return outputValue;
+	return myScore - (gamma * oppScore);
 }
 
 int OneLookaheadStrategy::pickItem(Game& game) {
@@ -185,7 +162,6 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 		const int totalCandidates = static_cast<int>(candidatesPool.size());
 		const int limit = std::min(candidateLimit, totalCandidates);
 
-		// Sort candidates to optimize Alpha-Beta cuts (Pruning triggers significantly faster)
 		std::partial_sort(candidatesPool.begin(), candidatesPool.begin() + limit, candidatesPool.end(),
 			[](const Candidate& a, const Candidate& b) noexcept {
 				return a.density > b.density;
@@ -195,20 +171,19 @@ int OneLookaheadStrategy::pickItem(Game& game) {
 		double bestScore = -std::numeric_limits<double>::infinity();
 		int bestItemId = -1;
 
-		std::copy(bitset.begin(), bitset.end(), layeredBitsets[0].begin());
-
+		// Evaluate each candidate through deep flash rollout projections
 		for (int i = 0; i < limit; ++i) {
 			const auto& cand = candidatesPool[i];
 			int idx = cand.index;
 			size_t chunk = static_cast<size_t>(cand.id) >> 6;
 			size_t bit = static_cast<size_t>(cand.id) & 63;
 
-			layeredBitsets[1][chunk] = layeredBitsets[0][chunk] & ~(1ULL << bit);
+			// Prepare memory state for rollout simulation
+			std::copy(bitset.begin(), bitset.end(), rolloutBitset.begin());
+			rolloutBitset[chunk] &= ~(1ULL << bit); // Take item
 
-			// Invoke absolute state Alpha-Beta search instead of local densities aggregation
-			double score = evaluateAlphaBeta(
-				1, false, dynamicGamma, -std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(),
-				itemIds, sizes, weights, costs,
+			double score = computeDeterministicRollout(
+				dynamicGamma, itemIds, sizes, weights, costs,
 				remS - sizes[idx], remW - weights[idx], oppRemS, oppRemW,
 				static_cast<double>(costs[idx]), 0.0
 			);
